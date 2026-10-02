@@ -20,24 +20,24 @@ volatile bool g_irq = false;
 
 void IRAM_ATTR on_dio1() { g_irq = true; }
 
-// RXEN/TXEN levels per mode. Polarity is [PV P-RF-1]: flip RF_SWITCH_INVERTED in config.h if the
-// test shows the inverted level is >= 15 dB stronger.
+// RXEN/TXEN levels per mode, filled in begin() from RadioSettings (polarity is [PV P-RF-1]).
 const uint32_t kPins[Module::RFSWITCH_MAX_PINS] = {PIN_LORA_RXEN, PIN_LORA_TXEN, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC};
-const Module::RfSwitchMode_t kTable[] = {
-    {Module::MODE_IDLE, {LOW, LOW}},
-    {Module::MODE_RX, {RF_SWITCH_INVERTED ? LOW : HIGH, RF_SWITCH_INVERTED ? HIGH : LOW}},
-    {Module::MODE_TX, {RF_SWITCH_INVERTED ? HIGH : LOW, RF_SWITCH_INVERTED ? LOW : HIGH}},
-    END_OF_MODE_TABLE,
-};
+Module::RfSwitchMode_t g_table[4];  // RadioLib keeps the pointer: static storage
 
 }  // namespace
 
-bool RadioSx1262::begin() {
+bool RadioSx1262::begin(const RadioSettings& cfg) {
+  const uint32_t rx_lvl = cfg.switch_inverted ? LOW : HIGH;
+  const uint32_t tx_lvl = cfg.switch_inverted ? HIGH : LOW;
+  g_table[0] = {Module::MODE_IDLE, {LOW, LOW}};
+  g_table[1] = {Module::MODE_RX, {rx_lvl, tx_lvl}};
+  g_table[2] = {Module::MODE_TX, {tx_lvl, rx_lvl}};
+  g_table[3] = END_OF_MODE_TABLE;
   g_spi.begin(PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI, PIN_LORA_NSS);
-  g_radio.setRfSwitchTable(kPins, kTable);
+  g_radio.setRfSwitchTable(kPins, g_table);
   const LoraParams& a = PARAMS_ALARM;
-  err_ = g_radio.begin(RF_FREQ_MHZ, a.bw_hz / 1000.0f, a.sf, 4 + a.cr, SYNC_WORD, RF_TX_POWER_DBM,
-                       RF_PREAMBLE_SYMBOLS, RF_TCXO_V, /*useRegulatorLDO=*/false);
+  err_ = g_radio.begin(RF_FREQ_MHZ, a.bw_hz / 1000.0f, a.sf, 4 + a.cr, SYNC_WORD, cfg.power_dbm,
+                       RF_PREAMBLE_SYMBOLS, cfg.tcxo_v, /*useRegulatorLDO=*/false);
   if (err_ != RADIOLIB_ERR_NONE) return false;
   err_ = g_radio.setCurrentLimit(RF_OCP_MA);
   if (err_ != RADIOLIB_ERR_NONE) return false;
@@ -48,6 +48,16 @@ bool RadioSx1262::begin() {
   tx_active_ = false;
   err_ = g_radio.startReceive();
   return err_ == RADIOLIB_ERR_NONE;
+}
+
+bool RadioSx1262::set_power(int8_t dbm) {
+  if (tx_active_ || dbm < -9 || dbm > RF_TX_POWER_DBM) return false;  // 22 dBm hard ceiling (IFT-008 margin)
+  g_radio.standby();
+  err_ = g_radio.setOutputPower(dbm);
+  if (err_ == RADIOLIB_ERR_NONE) err_ = g_radio.setCurrentLimit(RF_OCP_MA);
+  g_irq = false;
+  const int rx = g_radio.startReceive();
+  return err_ == RADIOLIB_ERR_NONE && rx == RADIOLIB_ERR_NONE;
 }
 
 bool RadioSx1262::set_profile(ProfileId p) {

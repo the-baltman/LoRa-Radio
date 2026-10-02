@@ -9,13 +9,22 @@
 
 namespace lr {
 
+// Settings that must be changeable without recompiling (the manual's P-RF-1 test changes them).
+struct RadioSettings {
+  float tcxo_v = 1.8f;           // Core1262 TCXO supply from DIO3 [V]
+  bool switch_inverted = false;  // RXEN/TXEN polarity
+  int8_t power_dbm = 0;          // effective TX power; the caller passes 0 until the RF path is verified
+};
+
 class RadioSx1262 {
  public:
   enum PollResult : uint8_t { POLL_NONE, POLL_TX_DONE, POLL_RX, POLL_RX_BAD };
 
   // Resets the chip, configures the alarm profile and starts RX. Returns false on any failure;
   // last_error() holds the RadioLib code (see RadioLib docs, e.g. -2 = chip not found).
-  bool begin();
+  bool begin(const RadioSettings& s);
+  // Changes TX power (hard-limited to -9..22 dBm). Not while transmitting.
+  bool set_power(int8_t dbm);
   // Re-tunes SF/BW/CR for `p` and restarts RX. Safe to call from RX or standby, not during TX.
   bool set_profile(ProfileId p);
   // Starts a transmission (returns immediately). false = refused.
