@@ -38,7 +38,7 @@ scripts/build.sh --flash COM5    # compila y graba (CP2102: puerto COM del admin
 
 Necesita `arduino-cli` (probado con 1.5.2-rc.1). **En Windows clonar en una ruta corta** (p. ej. `C:\lr`): desde rutas
 largas el compilador falla por MAX_PATH; el script convierte rutas con `cygpath -m` en Git Bash. Resultado de referencia (core 3.3.0, ESP32 Dev Module,
-partición por defecto): **762 239 B de flash (58 % de 1 310 720 B)**, **33 664 B de RAM estática (10 % de
+partición por defecto): **762 179 B de flash (58 % de 1 310 720 B)**, **33 664 B de RAM estática (10 % de
 327 680 B)**, sin errores ni avisos en el código propio. Además la tarea de audio reserva 32 768 B de pila
 y 2 x 1300 B de buffers de clip (clip máximo 8 s).
 
@@ -65,11 +65,22 @@ tests/host/run.sh          # g++ C++17; SANITIZE=1 activa ASan/UBSan donde exist
 python -m unittest tools/test_registro_serie.py
 ```
 
-390 comprobaciones (334 de protocolo y simulador de radio con ToA reales, 56 de UI/batería/DSP) y el barrido `sweep.cpp` del SOS durante un clip (falla si el peor caso tras el ANN >= 3000 ms; hoy 2561 ms con 2 nodos y 2618 ms con 3): códec de
-paquetes y rechazos, ToA contra las cifras del scientist, empaquetado de pares, reensamblado, contadores con
-vuelta 65535->0, ciclo SOS+ACK, ACK perdido sin doble alarma, clip sin pérdidas, con 1 fragmento perdido,
-con pérdida persistente (hueco), ANN perdido, **prioridad del SOS** (emisor, receptor con ACK_SOS en su ranura de voz, tercero), falla del
-radio, ranuras de ACK en broadcast.
+418 comprobaciones (334 de protocolo y simulador de radio con ToA reales, 28 de inyección de fallas, 56 de
+UI/batería/DSP) y dos barridos; cada pieza sale con código 1 si se rompe su límite:
+
+* `sweep.cpp`, SOS durante un clip (pulsación cada 10 ms de 0 a 4 s): falla si el peor caso tras el ANN es
+  >= 3000 ms en broadcast o si un nodo nunca recibe la alarma. Hoy 2561 ms con 2 nodos y 2618 ms con 3.
+* `edge.cpp`, inyección de fallas sobre el SOS del receptor durante un clip: radio que rechaza la ranura
+  ACK_SOS, radio muerto, VABORT del emisor antes de la ranura, enlace perdido, SOS mientras el receptor cierra
+  el clip. Exige que el SOS salga (o termine en FAILED), que el nodo salga de VOICE y que el botón SOS siga vivo.
+* `dualsweep.cpp`, dos SOS pulsados con 0-1500 ms de diferencia (cada 10 ms, 3 semillas, 2 y 3 nodos, 453
+  casos cada uno): falla si algún caso no se entrega completo o si el peor llega a 8000 ms. Hoy 0/453 sin
+  entrega, máximo 7194 ms (2 nodos) y 7220 ms (3 nodos).
+
+Además: códec de paquetes y rechazos, ToA contra las cifras del scientist, empaquetado de pares, reensamblado,
+contadores con vuelta 65535->0, ciclo SOS+ACK, ACK perdido sin doble alarma, clip sin pérdidas, con 1 fragmento
+perdido, con pérdida persistente (hueco), ANN perdido, **prioridad del SOS** (emisor, receptor con ACK_SOS en su
+ranura de voz, tercero), falla del radio, ranuras de ACK en broadcast.
 
 ## Verificar un módulo solo, en placa (para el manual de armado)
 
@@ -77,7 +88,8 @@ radio, ranuras de ACK en broadcast.
    RadioLib (-2 = chip no encontrado: SPI/BUSY/RESET o TCXO) y la consola sigue atendida: `tcxo 1.6` (reinicia).
    **Sin `rfok` el nodo transmite a 0 dBm** y la OLED dice "RF SIN VERIFICAR". Con la antena puesta y otro nodo a
    2 m: `rfsw 0` / `rfsw 1` (reinicia), mirar el RSSI del otro nodo; la polaridad correcta da >= 15 dB más.
-   Cuando es la buena: `rfok` (guarda en NVS), y `pot 22` si se quiere la potencia máxima.
+   **`rfsw` borra `rfok`** (vuelve a 0 dBm): una polaridad nueva no está verificada. Cuando es la buena: `rfok`
+   (guarda en NVS), y `pot 22` si se quiere la potencia máxima.
 2. **OLED**: la pantalla de arranque muestra "LoRa-Radio / ID n". Sin pantalla el nodo sigue funcionando.
 3. **Botones**: PTT graba, SOS mantenido 1.5 s manda alarma, MENU navega y manda, VOL cicla 0..5.
 4. **Batería**: `status` por serie imprime `bat=...mV`; comparar con el multímetro y calibrar con `cal <mV>` en
@@ -88,7 +100,7 @@ radio, ranuras de ACK en broadcast.
 
 Consola serie (115200): `id N`, `sleep 0|1`, `log 0|1`, `prueba N [periodo_ms]`, `status`, `help`, y los de
 calibración, todos guardados en NVS (el mismo binario del QR sirve en todos los nodos): `pot <-9..22>` (tope duro 22),
-`rfsw 0|1`, `rfok [0]`, `tcxo <V>`, `cal <mV reales>` (dos puntos, separados >= 300 mV; `cal reset`),
+`rfsw 0|1` (borra `rfok`), `rfok [0]`, `tcxo <V>`, `cal <mV reales>` (dos puntos, separados >= 300 mV; `cal reset`),
 `techo <q15 0..16384>` y `tono <Hz> <s>` (seno a volumen máximo para P-AUD-2).
 El light-sleep no se usa durante 30 s tras el arranque ni tras cualquier byte recibido (la UART no
 funciona dormida): configurar `id`/`sleep 0` en esa ventana.
@@ -110,7 +122,7 @@ enlaza al firmware, así que el firmware distribuido tiene que serlo. Baltasar a
 
 Cada uno bloquea su afirmación en el manual hasta medirse:
 
-1. Voltaje del TCXO (1.8 V supuesto) y polaridad RXEN/TXEN (`RF_SWITCH_INVERTED`).
+1. Voltaje del TCXO (1.8 V supuesto, comando `tcxo`) y polaridad RXEN/TXEN (comando `rfsw`, P-RF-1).
 2. Corriente y wake-up de light-sleep (GPIO wake en pines 34/35 solo-entrada; DIO1 como fuente) y que la
    radio siga recibiendo con el ESP32 dormido. Sin esto la autonomía no está demostrada.
 3. Tiempo de arranque del INMP441 (`MIC_WARMUP_MS 260`, recorta el inicio de la frase) y ganancia
@@ -121,6 +133,16 @@ Cada uno bloquea su afirmación en el manual hasta medirse:
    (`gpio_hold`, la OLED dice "APAGAR SW1 Y CARGAR").
 6. Calibración del ADC de batería y de los umbrales de corte.
 7. Latencia fin-de-PTT a audio (esperado ~2.2 s; cada ronda de NACK suma ~0.61 s en broadcast) y ciclo SOS+ACK
-   (esperado 0.5-0.8 s; durante un clip, <= 3.0 s en el peor caso del simulador) contra los del simulador. El log
-   `ACK` trae los ms desde el primer TX del mensaje para medirlo con un solo reloj.
+   (esperado 0.5-0.8 s; durante un clip, peor caso del simulador 2.62 s, criterio < 3.0 s) contra los del
+   simulador. El log `ACK` trae los ms **desde la pulsación** (cuando el firmware aceptó el mensaje), no desde el
+   primer TX: el SOS de un receptor durante un clip espera su ranura antes de transmitir.
 8. Dirección I2C de la OLED (0x3C supuesto).
+9. Dos SOS pulsados casi a la vez en dos nodos (el simulador no modela efecto captura ni ruido): deben llegar
+   los dos y acusarse; simulador 0/453 sin entrega, peor caso 7.2 s.
+
+## Alcance de v1
+
+* `VOICE_DST = NODE_BROADCAST` es **constante** (`app.cpp`): clips y mensajes van siempre a todos y no hay UI
+  para elegir destino. El formato admite unicast, pero el clip unicast es **función futura**: con él, el SOS de
+  un tercero no destinatario tarda hasta 2572 ms en el simulador (`sweep.cpp` lo mide con límite 3700 ms).
+* Límites del SOS que quedan declarados: `docs/protocolo.md` sección 6.
