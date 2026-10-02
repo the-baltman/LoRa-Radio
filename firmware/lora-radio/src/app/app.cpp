@@ -52,9 +52,9 @@ int8_t g_pot = RF_TX_POWER_DBM;     // power used once rfok is set
 float g_cal_gain = 1.0f, g_cal_off = 0.0f;
 float g_cal_p1_raw = 0, g_cal_p1_real = 0;
 bool g_cal_have_p1 = false;
-uint32_t g_first_tx_ms = 0;         // first TX of the message in flight (ACK log: ms since this)
-uint16_t g_tx_msg_id = 0;
-bool g_tx_msg_valid = false;
+// ACK log: ms since the press accepted by send_message(), not since the first TX: a receiver SOS during a clip
+// waits for the voice slot before its first TX, and timing from the TX would hide up to ~2 s (re-gate S11).
+uint32_t g_press_ms = 0;
 
 int8_t eff_power() { return g_rfok ? g_pot : RF_UNVERIFIED_POWER_DBM; }
 bool g_log = true;
@@ -169,7 +169,7 @@ void FwHost::notify(const Event& e) {
       g_have_link = true;
       set_notice(now, "ACK n%u (%u)", e.src, e.tries);
       log_row("ACK", e.src, e.type, e.msg_id, e.rssi, e.snr, static_cast<long>(e.rssi_remote), static_cast<long>(e.snr_remote * 100), e.tries,
-              static_cast<long>(now - g_first_tx_ms));
+              static_cast<long>(now - g_press_ms));
       break;
     case EV_ACK_EXTRA:
       set_notice(now, "ACK x%u", e.count);
@@ -180,11 +180,6 @@ void FwHost::notify(const Event& e) {
       log_row("FAIL", 0, e.type, e.msg_id, 0, 0, e.code, 0, e.tries);
       break;
     case EV_TX:
-      if (is_message_type(e.type) && (!g_tx_msg_valid || e.msg_id != g_tx_msg_id)) {
-        g_tx_msg_valid = true;
-        g_tx_msg_id = e.msg_id;
-        g_first_tx_ms = now;
-      }
       log_row("TX", e.dst, e.type, e.msg_id, 0, 0, e.count);
       break;
     case EV_CLIP_TX_DONE:
@@ -228,6 +223,7 @@ void send_msg(uint8_t type, uint32_t now) {
     set_notice(now, "OCUPADO");
     g_audio.alert(BEEP_ERROR);
   } else if (st == NodeFsm::SEND_OK) {
+    g_press_ms = now;
     set_notice(now, "ENVIANDO %s", message_text(type));
   }
   wake_display(now);
@@ -317,7 +313,7 @@ void serial_command(char* line, uint32_t now) {
   float f = 0;
   if (strcmp(line, "help") == 0) {
     Serial.println("Commands: id N | sleep 0|1 | log 0|1 | prueba N [period_ms] | status | help\n"
-                   "  RF: pot <-9..22> | rfsw 0|1 | rfok [0] | tcxo <V>   (without rfok the TX power is 0 dBm)\n"
+                   "  RF: pot <-9..22> | rfsw 0|1 (clears rfok) | rfok [0] | tcxo <V>   (without rfok the TX power is 0 dBm)\n"
                    "  cal <real_mV> | cal reset | techo <q15 0..16384> | tono <Hz> <s>");
   } else if (sscanf(line, "id %u", &a) == 1) {
     if (a >= 1 && a <= 254) {
@@ -348,7 +344,9 @@ void serial_command(char* line, uint32_t now) {
     }
   } else if (sscanf(line, "rfsw %u", &a) == 1) {
     g_prefs.putBool("rfsw", a != 0);
-    Serial.println("OK rfsw stored; rebooting");
+    g_prefs.putBool("rfok", false);  // a new polarity is unverified: back to 0 dBm until P-RF-1 passes again
+    g_rfok = false;
+    Serial.println("OK rfsw stored, rfok cleared (0 dBm until rfok); rebooting");
     Serial.flush();
     delay(100);
     ESP.restart();
@@ -627,6 +625,7 @@ void app_loop() {
   if (g_auto.left > 0 && static_cast<int32_t>(now - g_auto.next) >= 0 && !g_fsm->message_pending() &&
       g_fsm->role() == NodeFsm::Role::NONE) {
     if (g_fsm->send_message(T_PRUEBA, NODE_BROADCAST, now) == NodeFsm::SEND_OK) {
+      g_press_ms = now;
       g_auto.left--;
       g_auto.next = now + g_auto.period;
       set_notice(now, "PRUEBA %u rest", g_auto.left);
