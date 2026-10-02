@@ -81,8 +81,9 @@ una sola alarma en el receptor.
 
 * Codec2 1300: trama de 52 bit / 40 ms. Dos tramas se empaquetan en 13 B (`pair_pack.h`: 7 % menos que
   7 B por trama). Un **fragmento** = 19 pares = 247 B de audio = 1.52 s = paquete de 255 B.
-* Clip máximo 10 s = 125 pares = 7 fragmentos (6 x 255 B + 1 x 151 B), 1625 B. Se codifica al vuelo
-  mientras se graba; nunca se guarda PCM (160 kB no caben contiguos en el ESP32 sin PSRAM).
+* Clip máximo **8 s** = 100 pares = 6 fragmentos (5 x 255 B + 1 x 103 B), **1300 B** (`MAX_CLIP_PAIRS 100`).
+  Era 10 s; el arbitraje de c-morty (2026-10-02) lo bajó para que un SOS durante un clip quepa en < 3 s.
+  Se codifica al vuelo mientras se graba; nunca se guarda PCM (128 kB no caben contiguos en el ESP32 sin PSRAM).
 * Reensamblado (`ClipRx`): mapa de bits de recibidos; fragmentos en cualquier orden; duplicados y
   fragmentos con tamaño inconsistente se rechazan; los huecos quedan en cero y se reproducen como
   silencio.
@@ -90,13 +91,13 @@ una sola alarma en el receptor.
 ### Línea de tiempo (sin pérdidas)
 
 ```
-emisor   : [ANN SF12 248 ms][guarda 150][VFRAG 0..6 SF9 con 10 ms entre ellos ~2.07 s][escucha ACK/NACK]
+emisor   : [ANN SF12 248 ms][guarda 150][VFRAG 0..5 SF9 con 10 ms entre ellos ~1.7 s][escucha ACK/NACK]
 receptor : ...ANN -> cambia a SF9 ........ recibe fragmentos ......... ACK (SF9, ~40 ms) -> vuelve a SF12
 ```
 
-Medido [DER]: clip de 10 s, el receptor lo tiene a los **2531 ms** de `send_clip()` y el emisor se entera
-a los 2588 ms. El scientist estimó 2.24 s sin negociación: ANN (248 ms) + guarda (150 ms) suman ~0.4 s.
-El criterio "mediana <= 3 s" se cumple, pero el teórico "+-20 %" debe recalcularse con 2.5 s.
+Medido [DER]: clip de 8 s, el receptor lo tiene a los **2121 ms** de `send_clip()` (**~2.2 s**) y el emisor se
+entera a los 2178 ms. El scientist estimó 2.24 s para 10 s sin negociación; con 8 s y la negociación (ANN 248 ms
++ guarda 150 ms) queda en el mismo orden. El criterio "mediana <= 3 s" se cumple con 0.8 s de margen.
 
 ### Pérdida: reintento selectivo
 
@@ -104,11 +105,11 @@ El receptor sabe cuántos fragmentos esperar (ANN) y cuándo debería terminar l
 (`burst_end_est`). Cuando pasó ese instante **y** hubo 150 ms de silencio, manda `NACK(mask)`. El emisor
 reenvía solo esos fragmentos 30 ms después. Máximo **2 rondas**; si aún faltan, el receptor manda
 `ACK(status=1)` y reproduce con silencio en el hueco ("CLIP (HUECO)" en la OLED). Medido [DER]: 1 fragmento
-perdido -> completo a los 3081 ms con exactamente 1 VFRAG extra y 1 NACK; fragmento 3 perdido siempre ->
+perdido -> completo a los 2671 ms (+0.55 s por la ronda de NACK en unicast; **+0.61 s en broadcast**, dato del gate de c-morty) con exactamente 1 VFRAG extra y 1 NACK; fragmento 3 perdido siempre ->
 2 NACK y reproducción parcial con máscara `1<<3`.
 
 Si nadie responde tras la ráfaga (ANN perdido, o receptor fuera del alcance de SF9 pero dentro del de
-SF12), el emisor vuelve a perfil ALARM **1.4 s** (`RETRY_LISTEN_MS`) y reintenta todo el clip **una**
+SF12), el emisor vuelve a perfil ALARM **1.8 s** (`RETRY_LISTEN_MS`, >= periodo de reintento del SOS 1520 ms + ToA del SOS 248 ms; un test falla si se rompe la desigualdad) y reintenta todo el clip **una**
 vez; luego informa "CLIP SIN RESPUESTA". Un receptor que oyó el ANN pero ningún fragmento regresa solo a
 ALARM a los ~1 s (`NO_SIGNAL`). Un ANN repetido de un clip ya recibido (se perdió mi ACK) se
 re-recibe y re-ACKea **sin reproducirlo otra vez**.
@@ -134,29 +135,39 @@ grabación si llega uno).
 
 ## 6. Prioridad del SOS sobre un clip en curso
 
-| Situación | Qué pasa | Medido [DER] |
+Primera versión: el receptor que pulsaba SOS se callaba y el emisor, sordo en SF9 y sin respuesta, reintentaba el
+clip entero; el barrido del gate (pulsación cada 10 ms de 0 a 4 s) dio **máximo 8.1 s** (146/401 instantes >= 3 s). Se
+aplicó el arbitraje de c-morty (`QA\02-Arbitrajes\2026-10-02-lora-radio-sos-durante-clip.md`):
+
+* **SOS del receptor en su ranura de voz.** El receptor del clip que pulsa SOS **se queda en VOICE**, y en su
+  ranura de ACK, después del fin estimado de la ráfaga, manda `ACK(status = ACK_SOS = 2)` del clip. El emisor,
+  esperando respuesta, lo recibe, termina el clip (`CLIPTX_REMOTE_SOS`) y vuelve a ALARM; el receptor pasa a
+  ALARM y manda el SOS normal. El emisor ya no reintenta el clip.
+* **Clip máximo 8 s** (ráfaga más corta, 4 ranuras de ACK caben).
+* **`RETRY_LISTEN_MS = 1800`**: entre intentos de clip el emisor escucha en ALARM más que el periodo de
+  reintento del SOS.
+
+| Situación | Qué pasa | Medido [DER] (barrido, tras el ANN) |
 |---|---|---|
-| El emisor del clip presiona SOS (grabando, ANN, ráfaga o espera) | termina el fragmento en el aire, manda **VABORT** en VOICE (~40 ms) para que el receptor vuelva a ALARM al instante, pasa a ALARM y manda SOS | SOS entregado y ACKeado a **849 ms** de la pulsación a mitad de ráfaga |
+| El emisor del clip presiona SOS | termina el fragmento en el aire, manda **VABORT** en VOICE, pasa a ALARM y manda SOS | peor caso **2335 ms**; a mitad de ráfaga 849 ms |
 | Llega un SOS ajeno antes de que empiece la ráfaga (ANN o guarda) | el clip se cancela (`REMOTE_SOS`), VABORT, el SOS se ACKea | probado |
-| El **receptor** del clip presiona SOS | descarta el clip, pasa a ALARM, manda SOS; el emisor está sordo hasta que acabe su ráfaga | **3.56 s** (SOS a ~0.9 s del clip) |
-| Un tercer nodo (que no es destinatario) manda SOS durante el clip | los participantes están en SF9 y no lo oyen hasta que terminan; el SOS se reintenta | **3.56 s** (SOS a ~1.0 s del clip) |
+| El **receptor** presiona SOS (broadcast, 2 nodos) | ACK_SOS en su ranura de voz (arriba) | peor caso **2561 ms** |
+| Ídem con 3 nodos | ídem | peor caso **2618 ms** |
+| Clip unicast y un tercero que no es destinatario manda SOS | los participantes están en SF9 y no lo oyen hasta que terminan; el SOS se reintenta | peor caso **3556 ms** (límite v1 declarado, v1 no usa unicast) |
 
-**Hallazgo para c-morty:** el criterio "alarma + ACK < 3 s" se cumple en reposo (0.5-0.8 s) y cuando el
-emisor del clip presiona SOS, pero **no** en los dos últimos casos del peor momento (~3.6 s), porque los
-participantes de un clip están sordos al SF12 durante la ráfaga (~2.5 s) y el reintento del SOS es de
-~1.5 s en broadcast. Mitigaciones sin cambiar hardware, a decidir: acortar el clip máximo a 8 s
-(ráfaga 1.8 s), reducir el periodo de reintento del SOS (menos ranuras de ACK) o ventanas de escucha
-SF12 entre fragmentos (+ latencia). No las apliqué: cambian el balance alcance/latencia que es del scientist.
+`tests/host/sweep.cpp` repite el barrido en cada corrida y **falla** si el máximo tras el ANN es >= 3000 ms en
+los escenarios broadcast (o si algún nodo nunca recibe la alarma), y >= 3700 ms en el unicast con tercero.
 
-Sin LBT (escuchar antes de hablar): dos nodos que pulsan al mismo tiempo colisionan; los reintentos
-lo resuelven en la práctica. CAD del SX1262 queda como mejora.
+Límites que quedan para el manual: un SOS que arranca a menos de ~0.25 s del ANN de otro nodo choca con él
+(sin LBT) y puede tardar hasta ~3.6 s; con 3 o más nodos un SOS broadcast se da por entregado con el primer ACK
+(la mejora sería reintentar hasta que acusen todos los pares conocidos). CAD del SX1262 queda como mejora.
 
 ## 7. Constantes de tiempo
 
 Todas en `node_fsm.h` (con su unidad): `ACK_TURNAROUND_MS 20`, `ACK_MARGIN_MS 200`, `VOICE_GUARD_MS 150`,
 `FRAG_GAP_MS 10`, `RESP_WAIT_MS 400`, `RETX_START_MS 30`, `FRAG_IDLE_MS 150`, `NACK_MARGIN_MS 60`,
-`RETX_WAIT_MS 700`, `FIRST_FRAG_SLACK_MS 500`, `RETRY_LISTEN_MS 1400`, `MAX_NACK_ROUNDS 2`,
-`MAX_CLIP_ATTEMPTS 2`. Los tiempos de aire salen de `airtime.h` (fórmula Semtech; coincide con el
+`RETX_WAIT_MS 700`, `FIRST_FRAG_SLACK_MS 500`, `RETRY_LISTEN_MS 1800`, `MAX_NACK_ROUNDS 2`,
+`MAX_CLIP_ATTEMPTS 2`, `MAX_CLIP_PAIRS 100` (8 s). Los tiempos de aire salen de `airtime.h` (fórmula Semtech; coincide con el
 scientist: SF9/BW500/255 B = 312.6 ms, SF12/BW500/255 B = 1927.2 ms, verificado en los tests).
 
 ## 8. Contrato con el radio
@@ -177,7 +188,7 @@ LOG,<ms>,<ev>,<self>,<peer>,<type>,<id>,<rssi>,<snr>,<a>,<b>,<c>,<d>
 |---|---|---|---|---|---|---|
 | `TX` | destino | bytes | | | | |
 | `RX` | origen | | | | | del paquete |
-| `ACK` | quien acusó | RSSI remoto | SNR remoto x100 | intentos | | del ACK |
+| `ACK` | quien acusó | RSSI remoto | SNR remoto x100 | intentos | ms desde el primer TX del mensaje | del ACK |
 | `FAIL` | | 1 = reemplazado | | intentos | | |
 | `CLIPTX` | quien acusó | código | fragmentos sin entregar | intentos | ms PTT->ACK | del ACK |
 | `CLIPRX` | origen | 0 completo / 1 parcial / 2 duplicado | máscara faltante | rondas | ms ANN->completo | |
