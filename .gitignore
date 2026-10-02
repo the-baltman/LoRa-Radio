@@ -1,0 +1,7 @@
+build/
+*.o
+__pycache__/
+*.pyc
+tests/host/out/
+logs/
+
