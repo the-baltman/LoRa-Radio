@@ -8,6 +8,7 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -45,10 +46,21 @@ NodeFsm* g_fsm = nullptr;
 bool g_voice_ok = false;
 
 uint8_t g_node_id = NODE_ID_DEFAULT;
+RadioSettings g_rs;                 // tcxo / polarity from NVS
+bool g_rfok = false;                // P-RF-1 passed (stored by the serial command `rfok`)
+int8_t g_pot = RF_TX_POWER_DBM;     // power used once rfok is set
+float g_cal_gain = 1.0f, g_cal_off = 0.0f;
+float g_cal_p1_raw = 0, g_cal_p1_real = 0;
+bool g_cal_have_p1 = false;
+uint32_t g_first_tx_ms = 0;         // first TX of the message in flight (ACK log: ms since this)
+uint16_t g_tx_msg_id = 0;
+bool g_tx_msg_valid = false;
+
+int8_t eff_power() { return g_rfok ? g_pot : RF_UNVERIFIED_POWER_DBM; }
 bool g_log = true;
 bool g_sleep_enabled = true;
 uint32_t g_serial_awake_until = SERIAL_AWAKE_MS;
-char g_line[48];
+char g_line[64];
 size_t g_line_len = 0;
 
 float g_rssi = 0, g_snr = 0;
@@ -73,6 +85,11 @@ struct AutoPrueba {
   uint16_t left = 0;
   uint32_t period = PRUEBA_MIN_PERIOD_MS, next = 0;
 } g_auto;
+
+uint16_t vsys_mv() {
+  float v = g_batadc.read_mv() * g_cal_gain + g_cal_off;  // BatteryAdc is identity-calibrated; the real cal is here
+  return v < 0 ? 0 : (v > 65000 ? 65000 : static_cast<uint16_t>(v));
+}
 
 // ---- log -----------------------------------------------------------------------------------------
 // LOG,<ms>,<ev>,<self>,<peer>,<type>,<id>,<rssi>,<snr>,<a>,<b>,<c>,<d>   (see docs/protocolo.md sec. 9)
@@ -151,7 +168,8 @@ void FwHost::notify(const Event& e) {
       g_snr = e.snr;
       g_have_link = true;
       set_notice(now, "ACK n%u (%u)", e.src, e.tries);
-      log_row("ACK", e.src, e.type, e.msg_id, e.rssi, e.snr, static_cast<long>(e.rssi_remote), static_cast<long>(e.snr_remote * 100), e.tries);
+      log_row("ACK", e.src, e.type, e.msg_id, e.rssi, e.snr, static_cast<long>(e.rssi_remote), static_cast<long>(e.snr_remote * 100), e.tries,
+              static_cast<long>(now - g_first_tx_ms));
       break;
     case EV_ACK_EXTRA:
       set_notice(now, "ACK x%u", e.count);
@@ -162,6 +180,11 @@ void FwHost::notify(const Event& e) {
       log_row("FAIL", 0, e.type, e.msg_id, 0, 0, e.code, 0, e.tries);
       break;
     case EV_TX:
+      if (is_message_type(e.type) && (!g_tx_msg_valid || e.msg_id != g_tx_msg_id)) {
+        g_tx_msg_valid = true;
+        g_tx_msg_id = e.msg_id;
+        g_first_tx_ms = now;
+      }
       log_row("TX", e.dst, e.type, e.msg_id, 0, 0, e.count);
       break;
     case EV_CLIP_TX_DONE:
@@ -275,19 +298,27 @@ void handle_record_done(uint32_t now) {
 
 // ---- serial console --------------------------------------------------------------------------------
 void print_status(uint32_t now) {
+  if (g_fsm == nullptr) {
+    Serial.printf("STATUS booting id=%u rfok=%d pot=%d tcxo=%.1f rfsw=%d\n", g_node_id, g_rfok, g_pot, g_rs.tcxo_v, g_rs.switch_inverted);
+    return;
+  }
   Serial.printf("STATUS fw=%s id=%u core=%s heap=%u maxblk=%u psram=%u bat=%umV(%d%%) c2enc_max=%ums c2dec_max=%ums "
-                "rx_ok=%u rx_bad=%u foreign=%u dup=%u tx=%u txfail=%u up=%lus\n",
+                "rx_ok=%u rx_bad=%u foreign=%u dup=%u tx=%u txfail=%u up=%lus rfok=%d txpow=%ddBm tcxo=%.1f rfsw=%d\n",
                 FW_VERSION, g_node_id, ESP.getSdkVersion(), ESP.getFreeHeap(),
                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)), ESP.getPsramSize(),
                 g_bat.mv(), g_bat.percent(), g_audio.last_encode_ms(), g_audio.last_decode_ms(), g_fsm->stats().rx_ok,
                 g_fsm->stats().rx_bad, g_fsm->stats().rx_foreign, g_fsm->stats().rx_dup, g_fsm->stats().tx,
-                g_fsm->stats().tx_fail, static_cast<unsigned long>(now / 1000));
+                g_fsm->stats().tx_fail, static_cast<unsigned long>(now / 1000), g_rfok, eff_power(), g_rs.tcxo_v, g_rs.switch_inverted);
 }
 
 void serial_command(char* line, uint32_t now) {
   unsigned a = 0, b = 0;
+  int ia = 0;
+  float f = 0;
   if (strcmp(line, "help") == 0) {
-    Serial.println("Commands: id N | sleep 0|1 | log 0|1 | prueba N [period_ms] | status | help");
+    Serial.println("Commands: id N | sleep 0|1 | log 0|1 | prueba N [period_ms] | status | help\n"
+                   "  RF: pot <-9..22> | rfsw 0|1 | rfok [0] | tcxo <V>   (without rfok the TX power is 0 dBm)\n"
+                   "  cal <real_mV> | cal reset | techo <q15 0..16384> | tono <Hz> <s>");
   } else if (sscanf(line, "id %u", &a) == 1) {
     if (a >= 1 && a <= 254) {
       g_prefs.putUChar("id", static_cast<uint8_t>(a));
@@ -306,6 +337,82 @@ void serial_command(char* line, uint32_t now) {
     g_auto.period = (b >= PRUEBA_MIN_PERIOD_MS) ? b : PRUEBA_MIN_PERIOD_MS;
     g_auto.next = now;
     Serial.printf("OK prueba n=%u period=%lums\n", a, static_cast<unsigned long>(g_auto.period));
+  } else if (sscanf(line, "pot %d", &ia) == 1) {
+    if (ia < -9 || ia > RF_TX_POWER_DBM) {
+      Serial.printf("ERR pot must be -9..%d\n", RF_TX_POWER_DBM);
+    } else {
+      g_pot = static_cast<int8_t>(ia);
+      g_prefs.putChar("pot", g_pot);
+      bool ok = (g_fsm == nullptr) || g_radio.set_power(eff_power());
+      Serial.printf("%s pot=%d stored; TX power now %d dBm%s\n", ok ? "OK" : "ERR(radio busy)", g_pot, eff_power(), g_rfok ? "" : " (rfok not set: 0 dBm)");
+    }
+  } else if (sscanf(line, "rfsw %u", &a) == 1) {
+    g_prefs.putBool("rfsw", a != 0);
+    Serial.println("OK rfsw stored; rebooting");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+  } else if (strncmp(line, "rfok", 4) == 0) {
+    bool v = !(sscanf(line, "rfok %u", &a) == 1 && a == 0);
+    g_rfok = v;
+    g_prefs.putBool("rfok", v);
+    if (g_fsm != nullptr) g_radio.set_power(eff_power());
+    Serial.printf("OK rfok=%d, TX power %d dBm\n", v, eff_power());
+  } else if (sscanf(line, "tcxo %f", &f) == 1) {
+    if (f < 1.6f || f > 3.3f) {
+      Serial.println("ERR tcxo 1.6..3.3 V");
+    } else {
+      g_prefs.putFloat("tcxo", f);
+      Serial.println("OK tcxo stored; rebooting");
+      Serial.flush();
+      delay(100);
+      ESP.restart();
+    }
+  } else if (strcmp(line, "cal reset") == 0) {
+    g_cal_gain = 1.0f;
+    g_cal_off = 0.0f;
+    g_cal_have_p1 = false;
+    g_prefs.putFloat("calg", 1.0f);
+    g_prefs.putFloat("calo", 0.0f);
+    Serial.println("OK cal cleared");
+  } else if (sscanf(line, "cal %f", &f) == 1) {
+    const float raw = static_cast<float>(g_batadc.read_mv());
+    if (!g_cal_have_p1) {
+      g_cal_p1_raw = raw;
+      g_cal_p1_real = f;
+      g_cal_have_p1 = true;
+      Serial.printf("OK point 1: raw %.0f mV = real %.0f mV. Change VSYS by >= 300 mV and send `cal <real_mV>` again\n", raw, f);
+    } else if (fabsf(raw - g_cal_p1_raw) < 300.0f) {
+      Serial.println("ERR points too close (< 300 mV apart)");
+    } else {
+      const float gain = (f - g_cal_p1_real) / (raw - g_cal_p1_raw);
+      const float off = g_cal_p1_real - gain * g_cal_p1_raw;
+      if (gain < 0.8f || gain > 1.2f) {
+        Serial.printf("ERR gain %.3f out of 0.8..1.2: check the divider and the multimeter\n", gain);
+      } else {
+        g_cal_gain = gain;
+        g_cal_off = off;
+        g_cal_have_p1 = false;
+        g_prefs.putFloat("calg", gain);
+        g_prefs.putFloat("calo", off);
+        Serial.printf("OK cal gain=%.4f offset=%.1f mV; VSYS now %u mV\n", gain, off, vsys_mv());
+      }
+    }
+  } else if (sscanf(line, "techo %d", &ia) == 1) {
+    if (ia < 0 || ia > AUDIO_CEILING_Q15) {
+      Serial.printf("ERR techo 0..%d (hard cap 1.84 Vrms, electronics)\n", AUDIO_CEILING_Q15);
+    } else {
+      g_prefs.putShort("techo", static_cast<int16_t>(ia));
+      g_audio.set_ceiling(static_cast<int16_t>(ia));
+      Serial.printf("OK techo=%d stored\n", ia);
+    }
+  } else if (sscanf(line, "tono %u %u", &a, &b) == 2) {
+    if (!g_voice_ok || a < 100 || a > 4000 || b < 1 || b > 10) {
+      Serial.println("ERR tono <100..4000 Hz> <1..10 s> (needs audio)");
+    } else {
+      g_audio.test_tone(static_cast<uint16_t>(a), static_cast<uint8_t>(b));
+      Serial.printf("OK tone %u Hz %u s at max volume\n", a, b);
+    }
   } else if (strcmp(line, "status") == 0) {
     print_status(now);
   } else if (line[0]) {
@@ -349,7 +456,7 @@ void draw(uint32_t now) {
   m.snr = g_snr;
   m.state = state_text();
   m.last = g_last;
-  m.notice = (now < g_notice_until) ? g_notice : "";
+  m.notice = (now < g_notice_until) ? g_notice : (g_rfok ? "" : "RF SIN VERIFICAR");
   m.volume = g_audio.volume();
   m.menu_open = g_ui.menu_open();
   m.menu_index = g_ui.menu_index();
@@ -366,11 +473,20 @@ void draw(uint32_t now) {
 // ---- power -----------------------------------------------------------------------------------------
 [[noreturn]] void shutdown_low_battery() {
   g_oled.power(true);
-  g_oled.message("BATERIA AGOTADA", "CARGAR Y REINICIAR");
+  g_oled.message("BATERIA AGOTADA", "APAGAR SW1 Y CARGAR");
   g_audio.stop();
   g_radio.sleep();
   delay(3000);
   g_oled.power(false);
+  // Hold amp-off and RF switch low through deep sleep: a floating GPIO15 lets the MAX98357 module's
+  // pull-up switch the amp on and drain the cell after the cut-off [PV, gate S5].
+  digitalWrite(PIN_AMP_SD, LOW);
+  digitalWrite(PIN_LORA_TXEN, LOW);
+  digitalWrite(PIN_LORA_RXEN, LOW);
+  gpio_hold_en(static_cast<gpio_num_t>(PIN_AMP_SD));
+  gpio_hold_en(static_cast<gpio_num_t>(PIN_LORA_TXEN));
+  gpio_hold_en(static_cast<gpio_num_t>(PIN_LORA_RXEN));
+  gpio_deep_sleep_hold_en();
   esp_deep_sleep_start();  // no wake source: only reset/USB brings it back
   for (;;) {}
 }
@@ -400,6 +516,11 @@ void maybe_sleep(uint32_t now) {
 
 // ---- setup / loop ----------------------------------------------------------------------------------
 void app_setup() {
+  // After a battery cut-off the pins are still held: release them before driving anything.
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(static_cast<gpio_num_t>(PIN_AMP_SD));
+  gpio_hold_dis(static_cast<gpio_num_t>(PIN_LORA_TXEN));
+  gpio_hold_dis(static_cast<gpio_num_t>(PIN_LORA_RXEN));
   // Outputs that must be quiet before anything else (MTDO/GPIO15 is high at reset).
   pinMode(PIN_AMP_SD, OUTPUT);
   digitalWrite(PIN_AMP_SD, LOW);
@@ -417,6 +538,16 @@ void app_setup() {
     if (g_node_id == 0 || g_node_id == NODE_BROADCAST) g_node_id = NODE_ID_DEFAULT;
   }
   const uint8_t vol = g_prefs.getUChar("vol", VOLUME_DEFAULT);
+  g_rs.tcxo_v = g_prefs.getFloat("tcxo", RF_TCXO_V);
+  if (g_rs.tcxo_v < 1.6f || g_rs.tcxo_v > 3.3f) g_rs.tcxo_v = RF_TCXO_V;
+  g_rs.switch_inverted = g_prefs.getBool("rfsw", false);
+  g_rfok = g_prefs.getBool("rfok", false);
+  g_pot = g_prefs.getChar("pot", RF_TX_POWER_DBM);
+  if (g_pot < -9 || g_pot > RF_TX_POWER_DBM) g_pot = RF_TX_POWER_DBM;
+  g_rs.power_dbm = eff_power();
+  g_cal_gain = g_prefs.getFloat("calg", 1.0f);
+  g_cal_off = g_prefs.getFloat("calo", 0.0f);
+  const int16_t techo = g_prefs.getShort("techo", AUDIO_CEILING_Q15);
 
   esp_task_wdt_config_t wdt = {WDT_TIMEOUT_MS, 0, true};
   if (esp_task_wdt_init(&wdt) != ESP_OK) esp_task_wdt_reconfigure(&wdt);
@@ -429,17 +560,18 @@ void app_setup() {
 
   g_btn.begin();
   g_batadc.begin();
-  g_bat.update(now, g_batadc.read_mv(), false);
+  g_bat.update(now, vsys_mv(), false);
 
   Serial.printf("\nLoRa-Radio fw %s node %u | oled=%d | arduino-esp32 %s\n", FW_VERSION, g_node_id, have_oled,
                 ESP.getSdkVersion());
 
-  while (!g_radio.begin()) {  // not energized yet: safe to wait and retry
+  while (!g_radio.begin(g_rs)) {  // not energized yet: safe to wait and retry
     Serial.printf("ERR radio begin failed, RadioLib code %d (-2 = chip not found: check SPI/BUSY/TCXO)\n", g_radio.last_error());
     snprintf(l2, sizeof l2, "CODIGO %d", g_radio.last_error());
     g_oled.message("ERROR RADIO", l2);
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 50; i++) {  // keep the console alive: `tcxo`, `rfsw`, `status` work with a dead radio
       esp_task_wdt_reset();
+      serial_poll(millis());
       delay(100);
     }
   }
@@ -451,6 +583,7 @@ void app_setup() {
     delay(1500);
   } else {
     g_audio.set_volume(vol);
+    g_audio.set_ceiling(techo < 0 ? 0 : (techo > AUDIO_CEILING_Q15 ? AUDIO_CEILING_Q15 : techo));
   }
 
   g_fsm = new NodeFsm(g_host, g_node_id, static_cast<uint16_t>(esp_random() & 0xFFFF));
@@ -472,7 +605,7 @@ void app_loop() {
   // Radio: events first, then the state machine's timers.
   if (g_radio_fault && static_cast<int32_t>(now - g_radio_retry_at) >= 0) {
     g_radio_retry_at = now + 2000;
-    if (g_radio.begin()) g_radio_fault = false;
+    if (g_radio.begin(g_rs)) g_radio_fault = false;
   }
   uint8_t buf[MAX_PACKET];
   for (int i = 0; i < 4; i++) {
@@ -516,7 +649,7 @@ void app_loop() {
   if (static_cast<int32_t>(now - g_next_bat) >= 0) {
     g_next_bat = now + VBAT_PERIOD_MS;
     const bool loaded = g_radio.tx_active() || g_audio.state() == AUDIO_PLAYING || g_audio.state() == AUDIO_ALERT;
-    if (g_bat.update(now, g_batadc.read_mv(), loaded) == BAT_CUTOFF) shutdown_low_battery();
+    if (g_bat.update(now, vsys_mv(), loaded) == BAT_CUTOFF) shutdown_low_battery();
   }
 
   // Screen
