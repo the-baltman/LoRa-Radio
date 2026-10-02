@@ -18,24 +18,29 @@ enum SirenKind : uint8_t {
   BEEP_YES,       // short 1000 Hz
   BEEP_NO,        // short 600 Hz
   BEEP_ERROR,     // low double beep
+  TEST_TONE,      // sine at maximum volume, for the speaker ceiling test (serial `tono`)
 };
 
 enum AudioState : uint8_t { AUDIO_IDLE, AUDIO_PREPARING, AUDIO_RECORDING, AUDIO_PLAYING, AUDIO_ALERT };
 
 struct RecordResult {
   uint16_t pairs;     // 0 = nothing usable
-  bool full;          // stopped by the 10 s limit
+  bool full;          // stopped by the 8 s limit
   bool failed;        // I2S / codec error
 };
 
 class AudioEngine {
  public:
-  static constexpr size_t MAX_CLIP_BYTES_ = 125 * PAIR_BYTES;  // 10 s = MAX_CLIP_PAIRS in node_fsm.h
+  static constexpr size_t MAX_CLIP_BYTES_ = 100 * PAIR_BYTES;  // 8 s = MAX_CLIP_PAIRS in node_fsm.h
 
   // Allocates Codec2 and starts the task. false = out of memory or Codec2 mode mismatch.
   bool begin();
   void set_volume(uint8_t level);
   uint8_t volume() const { return volume_; }
+  // Output ceiling in Q15 of full scale; the caller clamps it to the config.h cap.
+  void set_ceiling(int16_t q15) { ceiling_ = q15; }
+  // P-AUD-2: sine tone at maximum volume through the ceiling, for `seconds` (1..10).
+  void test_tone(uint16_t hz, uint8_t seconds);
 
   bool start_record();          // false if the engine is busy
   void stop_record();           // end of PTT: result via poll_record()
@@ -62,6 +67,9 @@ class AudioEngine {
 
   volatile AudioState state_ = AUDIO_IDLE;
   volatile uint8_t volume_ = 3;
+  volatile int16_t ceiling_ = 16384;
+  uint16_t tone_hz_ = 1000;
+  uint8_t tone_s_ = 2;
   volatile bool stop_flag_ = false;
   volatile bool rec_discard_ = false;
   volatile bool rec_done_ = false;

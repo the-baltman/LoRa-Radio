@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <ESP_I2S.h>
+#include <math.h>
 #include <codec2.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -127,6 +128,12 @@ void AudioEngine::alert(SirenKind kind) {
   if (xQueueSend(static_cast<QueueHandle_t>(cmd_q_), &c, 0) != pdTRUE) state_ = AUDIO_IDLE;
 }
 
+void AudioEngine::test_tone(uint16_t hz, uint8_t seconds) {
+  tone_hz_ = hz;
+  tone_s_ = seconds < 1 ? 1 : (seconds > 10 ? 10 : seconds);
+  alert(TEST_TONE);
+}
+
 void AudioEngine::stop() {
   if (state_ == AUDIO_PLAYING || state_ == AUDIO_ALERT) stop_flag_ = true;
   else if (state_ == AUDIO_PREPARING || state_ == AUDIO_RECORDING) cancel_record();
@@ -215,7 +222,7 @@ void AudioEngine::run_play() {
     amp(false);
     return;
   }
-  const int16_t gain = volume_gain_q15(volume_, VOLUME_LEVELS, AUDIO_CEILING_Q15);
+  const int16_t gain = volume_gain_q15(volume_, VOLUME_LEVELS, ceiling_);
   Interpolator2 up;
   int16_t pcm8[kFrame8k], pcm16[kFrame16k];
   uint8_t fr[2][C2_FRAME_BYTES];
@@ -253,13 +260,14 @@ void AudioEngine::run_alert() {
   }
   const SirenKind kind = alert_kind_;
   const bool loud = (kind == SIREN_SOS || kind == SIREN_PELIGRO);
-  int lvl = volume_;
+  int lvl = (kind == TEST_TONE) ? VOLUME_LEVELS - 1 : volume_;
   if (loud && lvl < SIREN_MIN_LEVEL) lvl = SIREN_MIN_LEVEL;
-  const int16_t gain = volume_gain_q15(lvl, VOLUME_LEVELS, AUDIO_CEILING_Q15);
+  const int16_t gain = volume_gain_q15(lvl, VOLUME_LEVELS, ceiling_);
   ToneGen tone;
+  float sine_phase = 0;
   int16_t buf[kFrame16k];
   uint32_t frame = 0;  // 40 ms each
-  const uint32_t max_frames = (kind == BEEP_YES || kind == BEEP_NO) ? 4 : (kind == BEEP_ERROR ? 8 : ALARM_MAX_MS / 40);
+  const uint32_t max_frames = (kind == TEST_TONE) ? tone_s_ * 25u : (kind == BEEP_YES || kind == BEEP_NO) ? 4 : (kind == BEEP_ERROR ? 8 : ALARM_MAX_MS / 40);
   while (!stop_flag_ && frame < max_frames) {
     const uint32_t t_ms = frame * 40;
     uint32_t f = 0;  // 0 = silence
@@ -273,10 +281,19 @@ void AudioEngine::run_alert() {
       case BEEP_YES: f = 1000; break;
       case BEEP_NO: f = 600; break;
       case BEEP_ERROR: f = ((t_ms / 80) % 2 == 0) ? 300 : 0; break;
+      case TEST_TONE: f = tone_hz_; break;
       default: break;
     }
     if (f) tone.set(f, I2S_RATE_HZ);
-    for (int i = 0; i < kFrame16k; i++) buf[i] = f ? tone.next() : 0;
+    if (kind == TEST_TONE) {  // a sine, like the 1.84 Vrms limit assumes
+      for (int i = 0; i < kFrame16k; i++) {
+        buf[i] = static_cast<int16_t>(32767.0f * sinf(sine_phase));
+        sine_phase += 6.2831853f * f / I2S_RATE_HZ;
+        if (sine_phase > 6.2831853f) sine_phase -= 6.2831853f;
+      }
+    } else {
+      for (int i = 0; i < kFrame16k; i++) buf[i] = f ? tone.next() : 0;
+    }
     if (!write_mono16(buf, kFrame16k, gain)) break;
     frame++;
   }
