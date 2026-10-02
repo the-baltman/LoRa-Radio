@@ -35,9 +35,13 @@ constexpr uint32_t NACK_MARGIN_MS = 60;         // receiver: wait this past the 
 constexpr uint32_t RETX_WAIT_MS = 700;          // receiver: no fragment after a NACK -> give up
 constexpr uint32_t FIRST_FRAG_SLACK_MS = 500;   // receiver: slack for a late burst start
 constexpr uint32_t VR_CLOSE_FALLBACK_MS = 500;  // receiver: leave voice profile even if the ACK fails
-constexpr uint32_t RETRY_LISTEN_MS = 1800;      // sender: alarm-profile listening gap before re-announcing.
-                                                // Must be >= SOS retry period (broadcast: 1272 ms ACK wait + 248 ms ToA = 1519 ms)
-                                                // + ToA of the SOS (248 ms); tests/host checks the inequality
+constexpr uint8_t RETRY_BACKOFF_SLOTS = 4;      // message retry waits 0..3 extra slots of (ToA_SOS + 20 ms), pseudo-random
+                                                // per node: two SOS pressed within one ToA no longer collide on every retry
+constexpr uint32_t RETRY_LISTEN_MS = 2650;      // sender: alarm-profile listening gap before re-announcing.
+                                                // Must be >= max SOS retry period (broadcast: 248 ToA + 1272 ACK wait
+                                                // + 3 x 268 backoff = 2324 ms) + ToA of the SOS (248 ms) = 2572 ms;
+                                                // tests/host checks the inequality
+constexpr uint32_t ACK_SOS_TIMEOUT_MS = 300;    // receiver: ACK_SOS not sent by its slot + this -> leave VOICE, send the SOS anyway
 constexpr uint8_t MAX_NACK_ROUNDS = 2;          // selective retry rounds, then play with a gap
 constexpr uint8_t MAX_CLIP_ATTEMPTS = 2;        // whole-clip attempts when nobody answers
 constexpr uint16_t MAX_CLIP_PAIRS = 100;        // 8 s of audio (100 x 80 ms): arbitration 2026-10-02, SOS < 3 s
@@ -180,7 +184,7 @@ class NodeFsm {
   struct Vr {  // clip being received
     uint8_t src = 0, rounds = 0, frags_since_nack = 0;
     bool got_any = false, nack_queued = false, closing = false, duplicate = false, dst_bcast = false, sos_pending = false;
-    uint32_t first_deadline = 0, last_rx = 0, burst_end_est = 0, nack_done = 0, close_deadline = 0;
+    uint32_t first_deadline = 0, last_rx = 0, burst_end_est = 0, nack_done = 0, close_deadline = 0, sos_deadline = 0;
     float rssi = 0, snr = 0;  // of the last fragment, echoed in the final ACK
   };
 
@@ -222,6 +226,7 @@ class NodeFsm {
   void vr_finish_partial(bool send_ack, uint32_t now);
   void vr_abort(ClipRxEnd why, uint32_t now);
   void vr_close(uint32_t now);
+  void vr_release_sos(uint32_t now);
   void vr_queue_reply(TxKind kind, uint8_t status, uint16_t mask, uint32_t now);
   void vr_tick(uint32_t now);
   void vt_tick(uint32_t now);
@@ -229,6 +234,8 @@ class NodeFsm {
   Host& host_;
   const uint8_t id_;
   uint16_t next_id_;
+  uint32_t rng_ = 0;  // backoff PRNG state, seeded on first use
+  uint32_t retry_backoff_ms();
   Role role_ = Role::NONE;
   ProfileId cur_profile_ = PROFILE_ALARM;
   TxKind tx_kind_ = TXK_NONE;

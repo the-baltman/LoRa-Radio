@@ -70,6 +70,22 @@ uint32_t NodeFsm::ack_delay_ms(ProfileId profile, bool bcast) const {
   return d;
 }
 
+uint32_t NodeFsm::retry_backoff_ms() {
+  if (rng_ == 0) {  // murmur3 finalizer: neighbouring ids/msg_ids give unrelated sequences
+    uint32_t x = (static_cast<uint32_t>(id_) << 16) ^ next_id_ ^ 0x9E3779B9u;
+    x ^= x >> 16;
+    x *= 0x85EBCA6Bu;
+    x ^= x >> 13;
+    x *= 0xC2B2AE35u;
+    x ^= x >> 16;
+    rng_ = x ? x : 1u;
+  }
+  rng_ ^= rng_ << 13;  // xorshift32
+  rng_ ^= rng_ >> 17;
+  rng_ ^= rng_ << 5;
+  return (rng_ % RETRY_BACKOFF_SLOTS) * (toa_ms(PROFILE_ALARM, HEADER_LEN) + ACK_SLOT_GUARD_MS);
+}
+
 uint32_t NodeFsm::ack_wait_ms(uint8_t dst) const {
   uint32_t toa = toa_ms(PROFILE_ALARM, HEADER_LEN + 4);
   uint32_t w = ACK_TURNAROUND_MS + toa + ACK_MARGIN_MS;
@@ -213,8 +229,10 @@ NodeFsm::SendStatus NodeFsm::send_message(uint8_t type, uint8_t dst, uint32_t no
     if (!vr_.closing) {
       uint8_t b[MAX_PACKET];
       size_t n = build_ack(b, id_, vr_.src, clip_.msg_id(), T_VANN, ACK_SOS, vr_.rssi, vr_.snr);
-      queue_ack(TXK_ACK, PROFILE_VOICE_C2_1300, base + ack_delay_ms(PROFILE_VOICE_C2_1300, vr_.dst_bcast), b, n);
-    }
+      const uint32_t due = base + ack_delay_ms(PROFILE_VOICE_C2_1300, vr_.dst_bcast);
+      vr_.sos_deadline = due + ACK_SOS_TIMEOUT_MS;
+      queue_ack(TXK_ACK, PROFILE_VOICE_C2_1300, due, b, n);
+    }  // closing: the final ACK is already queued; vr_close() releases the SOS
     service_tx(now);
     return SEND_OK;
   }
@@ -583,7 +601,18 @@ void NodeFsm::vr_finish_partial(bool send_ack, uint32_t now) {
   }
 }
 
-void NodeFsm::vr_abort(ClipRxEnd why, uint32_t) {
+// A local SOS waiting for the voice slot must never be lost: whatever ends the reception arms it.
+void NodeFsm::vr_release_sos(uint32_t now) {
+  if (!vr_.sos_pending) return;
+  vr_.sos_pending = false;
+  if (pm_.active && pm_.type == T_SOS && !pm_.waiting) {
+    main_.kind = ACT_MSG;
+    main_.due = now;
+  }
+}
+
+void NodeFsm::vr_abort(ClipRxEnd why, uint32_t now) {
+  vr_release_sos(now);
   Event e;
   e.kind = EV_CLIP_RX_ABORT;
   e.src = vr_.src;
@@ -595,7 +624,8 @@ void NodeFsm::vr_abort(ClipRxEnd why, uint32_t) {
   apply_profile();
 }
 
-void NodeFsm::vr_close(uint32_t) {
+void NodeFsm::vr_close(uint32_t now) {
+  vr_release_sos(now);
   role_ = Role::NONE;
   vr_ = Vr();
   apply_profile();
@@ -606,7 +636,11 @@ void NodeFsm::vr_tick(uint32_t now) {
     if (reached(now, vr_.close_deadline)) vr_close(now);
     return;
   }
-  if (vr_.nack_queued || vr_.sos_pending) return;
+  if (vr_.sos_pending) {
+    if (reached(now, vr_.sos_deadline)) vr_abort(CLIPRX_LOCAL_SOS, now);  // ACK_SOS refused/dropped: go anyway
+    return;
+  }
+  if (vr_.nack_queued) return;
   if (!vr_.got_any && vr_.rounds == 0) {
     if (reached(now, vr_.first_deadline)) vr_abort(CLIPRX_NO_SIGNAL, now);
     return;
@@ -640,7 +674,7 @@ void NodeFsm::on_tx_done(uint32_t now) {
       } else if (pm_.active) {
         pm_.tries++;
         pm_.waiting = true;
-        pm_.deadline = now + ack_wait_ms(pm_.dst);
+        pm_.deadline = now + ack_wait_ms(pm_.dst) + retry_backoff_ms();
       }
       break;
     case TXK_ANN:
@@ -671,11 +705,9 @@ void NodeFsm::on_tx_done(uint32_t now) {
       vt_finish(vt_.abort_reason, now);
       break;
     case TXK_ACK:
-      if (role_ == Role::VRX && vr_.sos_pending) {
-        vr_abort(CLIPRX_LOCAL_SOS, now);
-        main_.kind = ACT_MSG;
-        main_.due = now;
-      } else if (role_ == Role::VRX && vr_.closing) vr_close(now);
+      // closing first: the clip was already delivered, so no "discarded" event; both paths arm a pending SOS
+      if (role_ == Role::VRX && vr_.closing) vr_close(now);
+      else if (role_ == Role::VRX && vr_.sos_pending) vr_abort(CLIPRX_LOCAL_SOS, now);
       break;
     case TXK_NACK:
       vr_.nack_queued = false;

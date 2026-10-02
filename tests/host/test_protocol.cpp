@@ -443,7 +443,7 @@ TEST(sos_by_bystander_during_clip) {
   printf("  bystander SOS at ~1.0 s of a clip: ACKed in %u ms\n", dt);
   CHECK(c.count(EV_MSG_ACKED) == 1);
   CHECK(a.count(EV_MSG_RX) == 1 && b.count(EV_MSG_RX) == 1);
-  CHECK(dt < 3700);  // non-addressed third node: documented v1 limit (<= 3.6 s), see sweep.cpp
+  CHECK(dt < 3700);  // non-addressed third node, unicast clip (future function, not reachable in v1), see sweep.cpp
   // the clip itself still completes
   net.run_until([&] { return a.count(EV_CLIP_TX_DONE) > 0; }, 10000);
   CHECK(a.count(EV_CLIP_TX_DONE) == 1);
@@ -511,8 +511,9 @@ TEST(retry_listen_covers_sos_retry_period) {
   // double miss that produced 8.1 s in the gate sweep comes back.
   uint32_t toa_ack = toa_ms(PROFILE_ALARM, HEADER_LEN + 4);
   uint32_t ack_wait_bcast = ACK_TURNAROUND_MS + toa_ack + ACK_MARGIN_MS + (ACK_SLOTS - 1u) * (toa_ack + ACK_SLOT_GUARD_MS);
-  uint32_t sos_period = toa_ms(PROFILE_ALARM, HEADER_LEN) + ack_wait_bcast;  // 248 + 1272 = 1520
-  printf("  SOS retry period %u ms, RETRY_LISTEN_MS %u\n", sos_period, (unsigned)RETRY_LISTEN_MS);
+  uint32_t toa_sos = toa_ms(PROFILE_ALARM, HEADER_LEN);
+  uint32_t sos_period = toa_sos + ack_wait_bcast + (RETRY_BACKOFF_SLOTS - 1u) * (toa_sos + ACK_SLOT_GUARD_MS);  // 248+1272+804
+  printf("  max SOS retry period %u ms, RETRY_LISTEN_MS %u\n", sos_period, (unsigned)RETRY_LISTEN_MS);
   CHECK(RETRY_LISTEN_MS >= sos_period + toa_ms(PROFILE_ALARM, HEADER_LEN));
 }
 
