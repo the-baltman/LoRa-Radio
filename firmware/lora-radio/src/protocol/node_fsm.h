@@ -35,11 +35,12 @@ constexpr uint32_t NACK_MARGIN_MS = 60;         // receiver: wait this past the 
 constexpr uint32_t RETX_WAIT_MS = 700;          // receiver: no fragment after a NACK -> give up
 constexpr uint32_t FIRST_FRAG_SLACK_MS = 500;   // receiver: slack for a late burst start
 constexpr uint32_t VR_CLOSE_FALLBACK_MS = 500;  // receiver: leave voice profile even if the ACK fails
-constexpr uint32_t RETRY_LISTEN_MS = 1400;      // sender: alarm-profile listening gap before re-announcing
-                                                // (> SOS retry period, so a deaf-burst SOS gets through)
+constexpr uint32_t RETRY_LISTEN_MS = 1800;      // sender: alarm-profile listening gap before re-announcing.
+                                                // Must be >= SOS retry period (broadcast: 1272 ms ACK wait + 248 ms ToA = 1519 ms)
+                                                // + ToA of the SOS (248 ms); tests/host checks the inequality
 constexpr uint8_t MAX_NACK_ROUNDS = 2;          // selective retry rounds, then play with a gap
 constexpr uint8_t MAX_CLIP_ATTEMPTS = 2;        // whole-clip attempts when nobody answers
-constexpr uint16_t MAX_CLIP_PAIRS = 125;        // 10 s of audio (125 x 80 ms)
+constexpr uint16_t MAX_CLIP_PAIRS = 100;        // 8 s of audio (100 x 80 ms): arbitration 2026-10-02, SOS < 3 s
 
 enum EventKind : uint8_t {
   EV_MSG_RX,        // new message for me (not a duplicate): src, type, msg_id, rssi, snr
@@ -61,7 +62,7 @@ enum ClipTxResult : uint8_t {
   CLIPTX_NO_RESPONSE,  // nobody answered after MAX_CLIP_ATTEMPTS
   CLIPTX_INCOMPLETE,   // still NACKing after MAX_NACK_ROUNDS
   CLIPTX_ABORTED_SOS,  // I pressed SOS during my clip
-  CLIPTX_REMOTE_SOS,   // someone else's SOS arrived before the burst started
+  CLIPTX_REMOTE_SOS,   // someone else's SOS: before the burst, or the receiver's ACK_SOS in its voice slot
   CLIPTX_CANCELLED,    // user cancel
   CLIPTX_RADIO_ERROR,
 };
@@ -178,7 +179,7 @@ class NodeFsm {
   };
   struct Vr {  // clip being received
     uint8_t src = 0, rounds = 0, frags_since_nack = 0;
-    bool got_any = false, nack_queued = false, closing = false, duplicate = false, dst_bcast = false;
+    bool got_any = false, nack_queued = false, closing = false, duplicate = false, dst_bcast = false, sos_pending = false;
     uint32_t first_deadline = 0, last_rx = 0, burst_end_est = 0, nack_done = 0, close_deadline = 0;
     float rssi = 0, snr = 0;  // of the last fragment, echoed in the final ACK
   };

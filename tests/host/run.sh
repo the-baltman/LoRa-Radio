@@ -9,6 +9,8 @@ mkdir -p "$out"
 g++ -std=c++17 -Wall -Wextra -g $SAN -I"$src" \
   "$here/test_protocol.cpp" "$src/protocol/protocol.cpp" "$src/protocol/node_fsm.cpp" -o "$out/test_protocol"
 "$out/test_protocol"
+g++ -std=c++17 -Wall -Wextra -O1 -I"$src" "$here/sweep.cpp" "$src/protocol/protocol.cpp" "$src/protocol/node_fsm.cpp" -o "$out/sweep"
+"$out/sweep"
 if [ -f "$here/test_ui.cpp" ]; then
   g++ -std=c++17 -Wall -Wextra -g $SAN -I"$src" "$here/test_ui.cpp" -o "$out/test_ui"
   "$out/test_ui"

@@ -275,7 +275,7 @@ TEST(clip_lossless) {
   Net net;
   Node& a = net.add(1);
   Node& b = net.add(2);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   uint32_t t0 = net.now;
   CHECK(a.fsm.send_clip(2, clip.data(), clip.size(), net.now) == NodeFsm::SEND_OK);
   net.run_until([&] { return a.count(EV_CLIP_TX_DONE) > 0 && b.fsm.role() == NodeFsm::Role::NONE; }, 10000);
@@ -283,8 +283,8 @@ TEST(clip_lossless) {
   const TimedEvent* done = b.find(EV_CLIP_RX_DONE);
   CHECK(done && done->e.code == CLIPRX_COMPLETE);
   CHECK(clip_equal(b.fsm.clip_rx(), clip));
-  CHECK(net.count_tx(T_VFRAG) == 7 && net.count_tx(T_VANN) == 1);
-  printf("  clip 10 s: send -> receiver has it: %u ms; sender notified: %u ms\n", done->t - t0,
+  CHECK(net.count_tx(T_VFRAG) == 6 && net.count_tx(T_VANN) == 1);
+  printf("  clip 8 s: send -> receiver has it: %u ms; sender notified: %u ms\n", done->t - t0,
          a.find(EV_CLIP_TX_DONE)->t - t0);
   CHECK(done->t - t0 < 2800);
   CHECK(a.fsm.profile() == PROFILE_ALARM && b.fsm.profile() == PROFILE_ALARM);
@@ -295,7 +295,7 @@ TEST(clip_one_fragment_lost_selective_retry) {
   Net net;
   Node& a = net.add(1);
   Node& b = net.add(2);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   int dropped = 0;
   net.drop = [&](const TxRec& r, int) {
     if ((r.buf[2] & 0x0F) == T_VFRAG && (r.buf[7] >> 4) == 2 && dropped == 0) {
@@ -310,7 +310,7 @@ TEST(clip_one_fragment_lost_selective_retry) {
   CHECK(a.find(EV_CLIP_TX_DONE)->e.code == CLIPTX_OK);
   CHECK(b.find(EV_CLIP_RX_DONE)->e.code == CLIPRX_COMPLETE && b.find(EV_CLIP_RX_DONE)->e.tries == 1);
   CHECK(clip_equal(b.fsm.clip_rx(), clip));
-  CHECK(net.count_tx(T_VFRAG) == 8 && net.count_tx(T_NACK) == 1);  // only the missing one is resent
+  CHECK(net.count_tx(T_VFRAG) == 7 && net.count_tx(T_NACK) == 1);  // only the missing one is resent
   printf("  1 fragment lost -> complete after %u ms\n", b.find(EV_CLIP_RX_DONE)->t - t0);
 }
 
@@ -318,10 +318,10 @@ TEST(clip_last_fragment_lost) {
   Net net;
   Node& a = net.add(1);
   Node& b = net.add(2);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   int dropped = 0;
   net.drop = [&](const TxRec& r, int) {
-    if ((r.buf[2] & 0x0F) == T_VFRAG && (r.buf[7] >> 4) == 6 && dropped++ == 0) return true;
+    if ((r.buf[2] & 0x0F) == T_VFRAG && (r.buf[7] >> 4) == 5 && dropped++ == 0) return true;
     return false;
   };
   a.fsm.send_clip(2, clip.data(), clip.size(), net.now);
@@ -334,7 +334,7 @@ TEST(clip_persistent_loss_plays_with_gap) {
   Net net;
   Node& a = net.add(1);
   Node& b = net.add(2);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   net.drop = [&](const TxRec& r, int) { return (r.buf[2] & 0x0F) == T_VFRAG && (r.buf[7] >> 4) == 3; };
   a.fsm.send_clip(2, clip.data(), clip.size(), net.now);
   net.run_until([&] { return a.count(EV_CLIP_TX_DONE) > 0 && b.fsm.role() == NodeFsm::Role::NONE; }, 20000);
@@ -394,7 +394,7 @@ TEST(sos_by_clip_sender_preempts_burst) {
   Net net;
   Node& a = net.add(1);
   Node& b = net.add(2);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   a.fsm.send_clip(2, clip.data(), clip.size(), net.now);
   net.run(1000);  // mid-burst
   CHECK(a.fsm.role() == NodeFsm::Role::VTX && b.fsm.role() == NodeFsm::Role::VRX);
@@ -414,17 +414,17 @@ TEST(sos_by_clip_receiver_preempts_reception) {
   Net net;
   Node& a = net.add(1);
   Node& b = net.add(2);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   a.fsm.send_clip(2, clip.data(), clip.size(), net.now);
   net.run(900);
   uint32_t t0 = net.now;
   CHECK(b.fsm.send_message(T_SOS, NODE_BROADCAST, net.now) == NodeFsm::SEND_OK);
   net.run_until([&] { return b.count(EV_MSG_ACKED) > 0; }, 15000);
   uint32_t dt = b.find(EV_MSG_ACKED) ? b.find(EV_MSG_ACKED)->t - t0 : 99999;
-  printf("  SOS pressed by the clip RECEIVER at ~0.9 s: delivered+ACKed in %u ms (sender is deaf until its burst ends)\n", dt);
+  printf("  SOS pressed by the clip RECEIVER at ~0.9 s: delivered+ACKed in %u ms (ACK_SOS in the voice slot)\n", dt);
   CHECK(a.count(EV_MSG_RX) == 1 && a.find(EV_MSG_RX)->e.type == T_SOS);
   CHECK(b.find(EV_CLIP_RX_ABORT) && b.find(EV_CLIP_RX_ABORT)->e.code == CLIPRX_LOCAL_SOS);
-  CHECK(dt < 5000);  // worst case, documented in docs/protocolo.md sec. 6 (exceeds the 3 s idle target)
+  CHECK(dt < 3000);  // receiver's SOS rides its voice ACK slot (ACK_SOS): arbitration 2026-10-02
 }
 
 TEST(sos_by_bystander_during_clip) {
@@ -432,7 +432,7 @@ TEST(sos_by_bystander_during_clip) {
   Node& a = net.add(1);
   Node& b = net.add(2);
   Node& c = net.add(3);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   // C is out of the clip addressing: it ignores the ANN and stays in the alarm profile.
   a.fsm.send_clip(2, clip.data(), clip.size(), net.now);
   net.run(1000);
@@ -443,7 +443,7 @@ TEST(sos_by_bystander_during_clip) {
   printf("  bystander SOS at ~1.0 s of a clip: ACKed in %u ms\n", dt);
   CHECK(c.count(EV_MSG_ACKED) == 1);
   CHECK(a.count(EV_MSG_RX) == 1 && b.count(EV_MSG_RX) == 1);
-  CHECK(dt < 5000);
+  CHECK(dt < 3700);  // non-addressed third node: documented v1 limit (<= 3.6 s), see sweep.cpp
   // the clip itself still completes
   net.run_until([&] { return a.count(EV_CLIP_TX_DONE) > 0; }, 10000);
   CHECK(a.count(EV_CLIP_TX_DONE) == 1);
@@ -453,7 +453,7 @@ TEST(remote_sos_cancels_clip_before_burst) {
   Net net;
   Node& a = net.add(1);
   net.add(2);
-  auto clip = make_clip(125);
+  auto clip = make_clip(100);
   a.fsm.send_clip(9, clip.data(), clip.size(), net.now);
   net.run(300);  // ANN (248 ms) done, guard running: A is listening in the alarm profile
   uint8_t buf[MAX_PACKET];
@@ -495,6 +495,43 @@ TEST(broadcast_ack_slots_do_not_collide) {
   (void)c;
 }
 
+
+TEST(clip_limit_is_8_seconds) {
+  Net net;
+  Node& a = net.add(1);
+  net.add(2);
+  auto clip = make_clip(101);
+  CHECK(MAX_CLIP_PAIRS == 100);
+  CHECK(a.fsm.send_clip(2, clip.data(), clip.size(), net.now) == NodeFsm::SEND_BAD_ARG);  // 8.08 s
+  CHECK(a.fsm.send_clip(2, clip.data(), 100 * PAIR_BYTES, net.now) == NodeFsm::SEND_OK);
+}
+
+TEST(retry_listen_covers_sos_retry_period) {
+  // The sender's alarm-profile gap must be able to catch an SOS retry (period + its ToA) or the
+  // double miss that produced 8.1 s in the gate sweep comes back.
+  uint32_t toa_ack = toa_ms(PROFILE_ALARM, HEADER_LEN + 4);
+  uint32_t ack_wait_bcast = ACK_TURNAROUND_MS + toa_ack + ACK_MARGIN_MS + (ACK_SLOTS - 1u) * (toa_ack + ACK_SLOT_GUARD_MS);
+  uint32_t sos_period = toa_ms(PROFILE_ALARM, HEADER_LEN) + ack_wait_bcast;  // 248 + 1272 = 1520
+  printf("  SOS retry period %u ms, RETRY_LISTEN_MS %u\n", sos_period, (unsigned)RETRY_LISTEN_MS);
+  CHECK(RETRY_LISTEN_MS >= sos_period + toa_ms(PROFILE_ALARM, HEADER_LEN));
+}
+
+TEST(receiver_sos_uses_voice_slot) {
+  Net net;
+  Node& a = net.add(1);
+  Node& b = net.add(2);
+  auto clip = make_clip(100);
+  a.fsm.send_clip(2, clip.data(), clip.size(), net.now);
+  net.run(900);
+  b.fsm.send_message(T_SOS, NODE_BROADCAST, net.now);
+  net.run_until([&] { return b.count(EV_MSG_ACKED) > 0; }, 8000);
+  CHECK(a.find(EV_CLIP_TX_DONE) && a.find(EV_CLIP_TX_DONE)->e.code == CLIPTX_REMOTE_SOS);
+  CHECK(b.find(EV_CLIP_RX_ABORT) && b.find(EV_CLIP_RX_ABORT)->e.code == CLIPRX_LOCAL_SOS);
+  CHECK(a.count(EV_MSG_RX) == 1 && a.find(EV_MSG_RX)->e.type == T_SOS);
+  CHECK(a.fsm.profile() == PROFILE_ALARM && b.fsm.profile() == PROFILE_ALARM);
+  CHECK(net.count_tx(T_VANN) == 1);  // the sender did not restart the clip
+}
+
 int main() {
   RUN(codec_roundtrip_and_rejects);
   RUN(airtime_matches_scientist);
@@ -518,6 +555,9 @@ int main() {
   RUN(sos_by_clip_receiver_preempts_reception);
   RUN(sos_by_bystander_during_clip);
   RUN(remote_sos_cancels_clip_before_burst);
+  RUN(clip_limit_is_8_seconds);
+  RUN(retry_listen_covers_sos_retry_period);
+  RUN(receiver_sos_uses_voice_slot);
   RUN(radio_failure_is_reported);
   RUN(broadcast_ack_slots_do_not_collide);
   printf("\n%d checks passed, %d failed\n", g_pass, g_fail);

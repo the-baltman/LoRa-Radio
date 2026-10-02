@@ -98,7 +98,7 @@ struct Packet {
 };
 
 // Payload structures ------------------------------------------------------------------------
-enum AckStatus : uint8_t { ACK_OK = 0, ACK_PARTIAL = 1 };
+enum AckStatus : uint8_t { ACK_OK = 0, ACK_PARTIAL = 1, ACK_SOS = 2 };
 
 struct AckInfo {
   uint8_t acked_type;

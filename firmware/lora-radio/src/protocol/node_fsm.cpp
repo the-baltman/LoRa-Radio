@@ -198,7 +198,6 @@ NodeFsm::SendStatus NodeFsm::send_message(uint8_t type, uint8_t dst, uint32_t no
     pm_fail(1);
     if (main_.kind == ACT_MSG) main_.kind = ACT_NONE;
   }
-  if (sos && role_ == Role::VRX) vr_abort(CLIPRX_LOCAL_SOS, now);
 
   pm_ = Pm();
   pm_.active = true;
@@ -207,6 +206,18 @@ NodeFsm::SendStatus NodeFsm::send_message(uint8_t type, uint8_t dst, uint32_t no
   pm_.msg_id = next_id_++;
   pm_.max_tries = sos ? MAX_TRIES_SOS : (type == T_PRUEBA ? MAX_TRIES_PRUEBA : MAX_TRIES_DEFAULT);
 
+  if (sos && role_ == Role::VRX) {  // C Morty prototype: tell the clip sender in VOICE, in my ACK slot, after its burst
+    vr_.sos_pending = true;
+    uint32_t est = vr_.burst_end_est + NACK_MARGIN_MS;
+    uint32_t base = reached(now, est) ? now : est;
+    if (!vr_.closing) {
+      uint8_t b[MAX_PACKET];
+      size_t n = build_ack(b, id_, vr_.src, clip_.msg_id(), T_VANN, ACK_SOS, vr_.rssi, vr_.snr);
+      queue_ack(TXK_ACK, PROFILE_VOICE_C2_1300, base + ack_delay_ms(PROFILE_VOICE_C2_1300, vr_.dst_bcast), b, n);
+    }
+    service_tx(now);
+    return SEND_OK;
+  }
   if (sos && role_ == Role::VTX) {
     vt_request_abort(CLIPTX_ABORTED_SOS, now);  // vt_finish() kicks the SOS out
   } else {
@@ -298,6 +309,11 @@ void NodeFsm::rx_message(const Packet& p, float rssi, float snr, uint32_t now) {
 void NodeFsm::rx_ack(const Packet& p, float rssi, float snr, uint32_t now) {
   AckInfo a;
   if (!parse_ack(p, &a)) return;
+  if (role_ == Role::VTX && vt_.sub == VT_WAIT && p.h.msg_id == vt_.msg_id && a.acked_type == T_VANN &&
+      a.status == ACK_SOS) {
+    vt_finish(CLIPTX_REMOTE_SOS, now);  // back to ALARM now: the SOS follows
+    return;
+  }
   if (role_ == Role::VTX && vt_.sub == VT_WAIT && p.h.msg_id == vt_.msg_id && a.acked_type == T_VANN) {
     vt_.got_resp = true;
     Event e;
@@ -377,7 +393,7 @@ void NodeFsm::rx_vann(const Packet& p, uint32_t now) {
 }
 
 void NodeFsm::rx_vfrag(const Packet& p, uint32_t now) {
-  if (role_ != Role::VRX || vr_.closing || p.h.src != vr_.src || p.h.msg_id != clip_.msg_id()) return;
+  if (role_ != Role::VRX || vr_.closing || vr_.sos_pending || p.h.src != vr_.src || p.h.msg_id != clip_.msg_id()) return;
   if (p.h.frag_cnt != clip_.frag_cnt()) return;
   ClipRx::AddResult r = clip_.add(p.h.frag_idx, p.payload, static_cast<uint8_t>(p.plen / PAIR_BYTES));
   if (r == ClipRx::ADD_REJECT) return;
@@ -590,7 +606,7 @@ void NodeFsm::vr_tick(uint32_t now) {
     if (reached(now, vr_.close_deadline)) vr_close(now);
     return;
   }
-  if (vr_.nack_queued) return;
+  if (vr_.nack_queued || vr_.sos_pending) return;
   if (!vr_.got_any && vr_.rounds == 0) {
     if (reached(now, vr_.first_deadline)) vr_abort(CLIPRX_NO_SIGNAL, now);
     return;
@@ -655,7 +671,11 @@ void NodeFsm::on_tx_done(uint32_t now) {
       vt_finish(vt_.abort_reason, now);
       break;
     case TXK_ACK:
-      if (role_ == Role::VRX && vr_.closing) vr_close(now);
+      if (role_ == Role::VRX && vr_.sos_pending) {
+        vr_abort(CLIPRX_LOCAL_SOS, now);
+        main_.kind = ACT_MSG;
+        main_.due = now;
+      } else if (role_ == Role::VRX && vr_.closing) vr_close(now);
       break;
     case TXK_NACK:
       vr_.nack_queued = false;
