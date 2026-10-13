@@ -70,11 +70,11 @@ así el emisor de un PRUEBA obtiene el enlace de ida y de vuelta con un solo paq
 ## 3. Mensajes y ACK automático
 
 Emisor: manda, espera el ACK `20 ms + ToA_ACK + 200 ms` (+ 3 ranuras si es broadcast) **más un backoff
-pseudoaleatorio de 0 a 3 ranuras de `ToA_SOS + 20 ms` = 0/268/536/804 ms** (`RETRY_BACKOFF_SLOTS 4`; xorshift32
+pseudoaleatorio de ranuras de `ToA_SOS + 20 ms` = 268 ms: 0 a 3 ranuras (0-804 ms) en los reintentos 1 y 2 (`RETRY_BACKOFF_SLOTS_EARLY 4`) y 0 a 7 (0-1876 ms) desde el 3o (`RETRY_BACKOFF_SLOTS 8`); xorshift32
 con semilla mezclada de `id` y `msg_id`, distinta por nodo) y reintenta con el mismo `msg_id`: SOS hasta 10
 intentos, PELIGRO/SI/NO 3, **PRUEBA 1** (un reintento escondería la pérdida que se quiere medir; el timeout
-cuenta como "sin ACK"). Periodo de reintento del SOS broadcast: 1520 a **2324 ms**; los 10 intentos sin
-respuesta tardan 15-23 s en terminar en "SIN ACK". Un SOS reemplaza a cualquier otro mensaje pendiente; los
+cuenta como "sin ACK"). Periodo de reintento del SOS broadcast: **1.52-2.32 s** en los reintentos 1 y 2 y **1.52-3.40 s** (3396 ms) desde el 3o; los 10 intentos sin
+respuesta tardan 15-32 s en terminar en "SIN ACK". Un SOS reemplaza a cualquier otro mensaje pendiente; los
 demás devuelven OCUPADO mientras haya un mensaje o clip en curso.
 
 Por qué el backoff: sin LBT y con periodo de reintento idéntico, dos SOS pulsados con < 0.2 s de diferencia
@@ -84,22 +84,20 @@ nodos y 75/453 con 3; con backoff 0/453 en los dos.
 
 **Semillas.** En el simulador el backoff es determinista: cada semilla (el `msg_id` inicial, que en placa sale
 de `esp_random`) es **una muestra** del retardo aleatorio. Los barridos corren 16 semillas por defecto
-(`LR_SEEDS=N` corre N) y las cifras de abajo son el máximo sobre esas 16, salvo donde dice 256.
+(`LR_SEEDS=N` corre N; `run.sh` corre `dualsweep` con 256) y las cifras de abajo son el máximo sobre esas 16, salvo donde dice 256 o 1024.
 
 Medido en el simulador [DER] (2 nodos, distancia corta, ToA reales): ciclo SOS broadcast + ACK
 **784 ms** (1->2) y **516 ms** (2->1); criterio del scientist <= 1.0 s (el backoff solo afecta reintentos).
 Con un ACK perdido: 2 intentos, una sola alarma en el receptor. Dos SOS casi simultáneos (0-1500 ms de
-diferencia, 16 semillas, 2416 casos por topología): 2 nodos p50 784 / p90 5432 / p99 11870 / **máx. 12.1 s**
-(12110 ms); 3 nodos p50 2304 / p90 4808 / **máx. 8.5 s** (8472 ms); 0 casos sin entrega (el test falla con un
-caso sin entrega o con un máximo >= 13000 ms).
+diferencia): **siempre se entregan los dos y se acusan** (0 casos sin ACK con 1024 semillas, 2 y 3 nodos); la alarma
+se oye en el otro nodo hasta en **17.3 s** y el ACK llega hasta en **18.3 s** (2 nodos; 17.5 s con 3). El test falla
+con un solo caso sin entrega (límite de tiempo 20000 ms).
 
-**Límite abierto (2026-10-12, en arbitraje de c-morty).** Con 256 semillas (`LR_SEEDS=256`), dos SOS con
-**2 nodos** dejan **75 de 38656 casos (0.19 %) sin entrega**: los dos SOS terminan en "SIN ACK" tras 10
-intentos, siempre con 260-530 ms de diferencia entre pulsaciones, y el máximo de los entregados sube a 18.7 s
-(3 nodos: 0 sin entrega, máx. 14.6 s). Causa: en ese rango los dos se oyen, sus ACK chocan y quedan ~20 ms
-desfasados; una ranura de backoff mide 268 ms y un SOS 248 ms, así que no solo la misma ranura choca sino
-también la vecina (~7/16 por reintento en lugar de 1/4). No depende del generador (falla igual con semillas
-independientes o con los bits altos de xorshift). La corrección es de firmware y la decide c-morty.
+**Por qué 8 ranuras desde el 3er reintento (re-gate 3, R3-1).** Con 4 ranuras fijas, 75 de 38656 casos (0.19 %,
+256 semillas, 2 nodos) terminaban en "SIN ACK" aunque las dos alarmas llegaban: los dos ACK chocan, los relojes
+de reintento quedan ~20 ms desfasados y, con ranura de 268 ms y SOS de 248 ms, chocan en la misma ranura y en la
+vecina. Escalonar (4 ranuras en los reintentos 1-2, 8 desde el 3o) lo elimina y no mueve ninguna otra cifra;
+8 ranuras desde el 2o reintento subía el choque con el ANN a 6.2 s.
 
 ## 4. Clip de voz (Codec2 1300, SF9)
 
@@ -133,7 +131,7 @@ perdido -> completo a los 2671 ms (+0.55 s por la ronda de NACK en unicast; **+0
 2 NACK y reproducción parcial con máscara `1<<3`.
 
 Si nadie responde tras la ráfaga (ANN perdido, o receptor fuera del alcance de SF9 pero dentro del de
-SF12), el emisor vuelve a perfil ALARM **2.65 s** (`RETRY_LISTEN_MS`, >= periodo máximo de reintento del SOS 2324 ms + ToA del SOS 248 ms = 2572 ms; un test falla si se rompe la desigualdad) y reintenta todo el clip **una**
+SF12), el emisor vuelve a perfil ALARM **3.65 s** (`RETRY_LISTEN_MS`, >= periodo máximo de reintento del SOS 3396 ms (248 + 1272 + 7 x 268) + ToA del SOS 248 ms = 3644 ms; un test falla si se rompe la desigualdad) y reintenta todo el clip **una**
 vez; luego informa "CLIP SIN RESPUESTA". Un receptor que oyó el ANN pero ningún fragmento regresa solo a
 ALARM a los ~1 s (`NO_SIGNAL`). Un ANN repetido de un clip ya recibido (se perdió mi ACK) se
 re-recibe y re-ACKea **sin reproducirlo otra vez**.
@@ -174,8 +172,8 @@ aplicó el arbitraje de c-morty (`QA\02-Arbitrajes\2026-10-02-lora-radio-sos-dur
   (`ACK_SOS_TIMEOUT_MS`) el receptor sale de VOICE y manda el SOS igual. Antes, en esos casos, el nodo quedaba
   en VOICE para siempre y otra pulsación daba `SEND_ALREADY` (botón SOS muerto).
 * **Clip máximo 8 s** (ráfaga más corta, 4 ranuras de ACK caben).
-* **`RETRY_LISTEN_MS = 2650`**: entre intentos de clip el emisor escucha en ALARM más que el periodo máximo de
-  reintento del SOS (con backoff, 2324 ms) + su ToA.
+* **`RETRY_LISTEN_MS = 3650`**: entre intentos de clip el emisor escucha en ALARM más que el periodo máximo de
+  reintento del SOS (con backoff escalonado, 3396 ms) + su ToA.
 
 | Situación | Qué pasa | Medido [DER] (barrido, tras el ANN, 16 semillas) |
 |---|---|---|
@@ -185,22 +183,22 @@ aplicó el arbitraje de c-morty (`QA\02-Arbitrajes\2026-10-02-lora-radio-sos-dur
 | Ídem con 3 nodos | ídem | peor caso **2618 ms** (ídem) |
 | El receptor presiona SOS y el emisor también, antes de la ranura | VABORT del emisor; el receptor arma su SOS al cerrar; llegan los dos | probado (`edge.cpp` E2) |
 | La ranura ACK_SOS no sale (radio rechaza, cola llena) | a los 300 ms el receptor deja VOICE y manda el SOS | probado (`edge.cpp` E1, E1b) |
-| Dos nodos en reposo pulsan SOS con 0-1500 ms de diferencia | backoff aleatorio en los reintentos (sec. 3) | **máx. 12.1 s** (2 nodos), **8.5 s** (3 nodos), 0/2416 sin entrega; con 256 semillas, 0.19 % sin entrega con 2 nodos (límite abierto, sec. 3) |
+| Dos nodos en reposo pulsan SOS con 0-1500 ms de diferencia | backoff aleatorio en los reintentos (sec. 3) | siempre se entregan: alarma hasta **17.3 s**, ACK hasta **18.3 s** (2 nodos; 1024 semillas, 0 sin ACK) |
 | *(función futura)* Clip unicast y un tercero que no es destinatario manda SOS | los participantes están en SF9 y no lo oyen hasta que terminan; el SOS se reintenta | peor caso **4628 ms** (igual con 256 semillas); no ocurre en v1 (`VOICE_DST` broadcast constante) |
 
 `tests/host/sweep.cpp` repite el barrido (16 semillas) en cada corrida y **falla** si, tras el ANN, algún nodo
 nunca recibe la alarma o el máximo llega a 3000 ms (receptor, 2 y 3 nodos) o a 3200 ms (emisor). El unicast con
 tercero se imprime sin puerta (función futura). `tests/host/edge.cpp` (inyección de fallas) y
-`tests/host/dualsweep.cpp` (dos SOS, límite 13000 ms y 0 sin entrega) también fallan si se rompe su límite; las
+`tests/host/dualsweep.cpp` (dos SOS, 256 semillas, límite 20000 ms y 0 sin entrega) también fallan si se rompe su límite; las
 puertas se comprobaron rompiéndolas a propósito (quitar `vr_release_sos`, quitar el plazo de 300 ms, backoff de
-1 ranura, `RETRY_LISTEN_MS 2400`, 5 ranuras de backoff: cada mutación da código 1).
+1 ranura, `RETRY_LISTEN_MS 2400`, 5 ranuras de backoff (con las 8 de ahora, `RETRY_LISTEN_MS` menor que el periodo máximo): cada mutación da código 1).
 
 Límites que quedan para el manual (sin LBT; CAD del SX1262 queda como mejora):
 
 * SOS durante un clip: <= 3.0 s, salvo si lo pulsa el emisor en los ~30 ms que siguen al fin de su ráfaga:
   <= 3.14 s (simulador).
 * Un SOS que arranca a menos de ~0.26 s del ANN de otro nodo choca con él. Con 2 nodos se entrega igual, en
-  hasta **5.2 s** (5164 ms; igual con 256 semillas).
+  hasta **5.2 s** (5164 ms; igual con 256 semillas). Unicast futuro con un tercero: hasta 4.6 s (4628 ms), solo como función futura.
 * **Con 3 o más nodos, un SOS pulsado durante el ANN de otro (0-240 ms del inicio del clip) puede dejar al
   emisor del clip sin la alarma** (`sweep.cpp`, resultado 88888 en 375 de 400 casos antes del ANN con 16
   semillas, 6085/6400 con 256): el SOS choca con el ANN, el emisor pasa a la ráfaga en SF9 sin haberlo oído, un
@@ -208,15 +206,14 @@ Límites que quedan para el manual (sin LBT; CAD del SX1262 queda como mejora):
   2840 ms) y el tercero la alarma; el emisor del clip no. La mejora sería reintentar hasta que acusen todos los
   pares conocidos. El barrido no lo cuenta como falla porque está antes del fin del ANN; el manual científico
   lo declara.
-* Dos SOS casi simultáneos: hasta 12.1 s (2 nodos) y 8.5 s (3 nodos) con 16 semillas, y el 0.19 % sin entrega
-  con 2 nodos visto con 256 semillas (sec. 3, en arbitraje). Simulador sin efecto captura ni ruido; la prueba
-  de campo de dos SOS va al manual de armado.
+* Dos SOS casi simultáneos: se entregan y se acusan siempre; alarma hasta 17.3 s y ACK hasta 18.3 s (simulador,
+  1024 semillas). Simulador sin efecto captura ni ruido; la prueba de campo de dos SOS va al manual de armado.
 
 ## 7. Constantes de tiempo
 
 Todas en `node_fsm.h` (con su unidad): `ACK_TURNAROUND_MS 20`, `ACK_MARGIN_MS 200`, `VOICE_GUARD_MS 150`,
 `FRAG_GAP_MS 10`, `RESP_WAIT_MS 400`, `RETX_START_MS 30`, `FRAG_IDLE_MS 150`, `NACK_MARGIN_MS 60`,
-`RETX_WAIT_MS 700`, `FIRST_FRAG_SLACK_MS 500`, `RETRY_LISTEN_MS 2650`, `RETRY_BACKOFF_SLOTS 4`,
+`RETX_WAIT_MS 700`, `FIRST_FRAG_SLACK_MS 500`, `RETRY_LISTEN_MS 3650`, `RETRY_BACKOFF_SLOTS_EARLY 4`, `RETRY_BACKOFF_SLOTS 8`,
 `ACK_SOS_TIMEOUT_MS 300`, `MAX_NACK_ROUNDS 2`,
 `MAX_CLIP_ATTEMPTS 2`, `MAX_CLIP_PAIRS 100` (8 s). Los tiempos de aire salen de `airtime.h` (fórmula Semtech; coincide con el
 scientist: SF9/BW500/255 B = 312.6 ms, SF12/BW500/255 B = 1927.2 ms, verificado en los tests).

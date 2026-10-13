@@ -68,8 +68,8 @@ python -m unittest tools/test_registro_serie.py
 418 comprobaciones (334 de protocolo y simulador de radio con ToA reales, 28 de inyección de fallas, 56 de
 UI/batería/DSP) y dos barridos; cada pieza sale con código 1 si se rompe su límite:
 
-Los barridos corren 16 semillas del backoff (en el simulador cada semilla es una muestra del retardo
-aleatorio); `LR_SEEDS=256 tests/host/out/sweep` (o `dualsweep`) corre más después de `run.sh`.
+`sweep` corre 16 semillas del backoff y `dualsweep` 256 (en el simulador cada semilla es una muestra del retardo
+aleatorio); `LR_SEEDS=1024 tests/host/out/dualsweep` corre más después de `run.sh`.
 
 * `sweep.cpp`, SOS durante un clip (pulsación cada 10 ms de 0 a 4 s): falla si tras el ANN un nodo nunca recibe
   la alarma o el peor caso llega a 3000 ms (receptor) o 3200 ms (emisor). Hoy receptor 2561 ms (2 nodos) y
@@ -77,10 +77,9 @@ aleatorio); `LR_SEEDS=256 tests/host/out/sweep` (o `dualsweep`) corre más despu
 * `edge.cpp`, inyección de fallas sobre el SOS del receptor durante un clip: radio que rechaza la ranura
   ACK_SOS, radio muerto, VABORT del emisor antes de la ranura, enlace perdido, SOS mientras el receptor cierra
   el clip. Exige que el SOS salga (o termine en FAILED), que el nodo salga de VOICE y que el botón SOS siga vivo.
-* `dualsweep.cpp`, dos SOS pulsados con 0-1500 ms de diferencia (cada 10 ms, 16 semillas, 2 y 3 nodos, 2416
-  casos cada uno): falla si algún caso no se entrega completo o si el peor llega a 13000 ms. Hoy 0/2416 sin
-  entrega, máximo 12.1 s (2 nodos) y 8.5 s (3 nodos). **Con 256 semillas falla**: 0.19 % de los casos con 2
-  nodos sin entrega y máximo 18.7 s (límite abierto en arbitraje, `docs/protocolo.md` sec. 3).
+* `dualsweep.cpp`, dos SOS pulsados con 0-1500 ms de diferencia (cada 10 ms, 256 semillas, 2 y 3 nodos): falla si
+  algún caso no se entrega completo y acusado (límite de tiempo 20000 ms). Hoy 0 sin ACK también con 1024 semillas;
+  alarma oída hasta 17.3 s y ACK hasta 18.3 s (2 nodos), 17.5 s (3 nodos).
 
 Además: códec de paquetes y rechazos, ToA contra las cifras del scientist, empaquetado de pares, reensamblado,
 contadores con vuelta 65535->0, ciclo SOS+ACK, ACK perdido sin doble alarma, clip sin pérdidas, con 1 fragmento
@@ -144,8 +143,7 @@ Cada uno bloquea su afirmación en el manual hasta medirse:
    primer TX: el SOS de un receptor durante un clip espera su ranura antes de transmitir.
 8. Dirección I2C de la OLED (0x3C supuesto).
 9. Dos SOS pulsados casi a la vez en dos nodos (el simulador no modela efecto captura ni ruido): deben llegar
-   los dos y acusarse; simulador con 16 semillas 0/2416 sin entrega y peor caso 12.1 s, pero con 256 semillas
-   0.19 % sin entrega con 2 nodos (límite abierto, en arbitraje).
+   los dos y acusarse; simulador con 1024 semillas: 0 sin ACK, alarma hasta 17.3 s y ACK hasta 18.3 s.
 
 ## Alcance de v1
 
