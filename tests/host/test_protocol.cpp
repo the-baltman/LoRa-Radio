@@ -512,7 +512,7 @@ TEST(retry_listen_covers_sos_retry_period) {
   uint32_t toa_ack = toa_ms(PROFILE_ALARM, HEADER_LEN + 4);
   uint32_t ack_wait_bcast = ACK_TURNAROUND_MS + toa_ack + ACK_MARGIN_MS + (ACK_SLOTS - 1u) * (toa_ack + ACK_SLOT_GUARD_MS);
   uint32_t toa_sos = toa_ms(PROFILE_ALARM, HEADER_LEN);
-  uint32_t sos_period = toa_sos + ack_wait_bcast + (RETRY_BACKOFF_SLOTS - 1u) * (toa_sos + ACK_SLOT_GUARD_MS);  // 248+1272+804
+  uint32_t sos_period = toa_sos + ack_wait_bcast + (RETRY_BACKOFF_SLOTS - 1u) * (toa_sos + ACK_SLOT_GUARD_MS);  // 248+1272+1876
   printf("  max SOS retry period %u ms, RETRY_LISTEN_MS %u\n", sos_period, (unsigned)RETRY_LISTEN_MS);
   CHECK(RETRY_LISTEN_MS >= sos_period + toa_ms(PROFILE_ALARM, HEADER_LEN));
 }

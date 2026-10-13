@@ -18,7 +18,7 @@
 using namespace sim;
 using namespace lr;
 
-static const int kLimitMs = 13000;  // re-gate 2 D1: up to 12.1 s seen with 2 nodes over 16 seeds
+static const int kLimitMs = 20000;  // re-gate 3: up to 18.3 s (2 nodes) over 256 and 1024 seeds; the gate is "not delivered = 0"
 static const uint16_t kSeedList[] = {100,  7777,  31337, 1,     42,    255,   1000,  4242,
                                      9999, 12345, 20000, 27182, 31415, 40000, 50000, 65000};
 

@@ -70,7 +70,7 @@ uint32_t NodeFsm::ack_delay_ms(ProfileId profile, bool bcast) const {
   return d;
 }
 
-uint32_t NodeFsm::retry_backoff_ms() {
+uint32_t NodeFsm::retry_backoff_ms(uint8_t tries) {
   if (rng_ == 0) {  // murmur3 finalizer: neighbouring ids/msg_ids give unrelated sequences
     uint32_t x = (static_cast<uint32_t>(id_) << 16) ^ next_id_ ^ 0x9E3779B9u;
     x ^= x >> 16;
@@ -83,7 +83,8 @@ uint32_t NodeFsm::retry_backoff_ms() {
   rng_ ^= rng_ << 13;  // xorshift32
   rng_ ^= rng_ >> 17;
   rng_ ^= rng_ << 5;
-  return (rng_ % RETRY_BACKOFF_SLOTS) * (toa_ms(PROFILE_ALARM, HEADER_LEN) + ACK_SLOT_GUARD_MS);
+  const uint32_t slots = (tries >= 3) ? RETRY_BACKOFF_SLOTS : RETRY_BACKOFF_SLOTS_EARLY;
+  return (rng_ % slots) * (toa_ms(PROFILE_ALARM, HEADER_LEN) + ACK_SLOT_GUARD_MS);
 }
 
 uint32_t NodeFsm::ack_wait_ms(uint8_t dst) const {
@@ -674,7 +675,7 @@ void NodeFsm::on_tx_done(uint32_t now) {
       } else if (pm_.active) {
         pm_.tries++;
         pm_.waiting = true;
-        pm_.deadline = now + ack_wait_ms(pm_.dst) + retry_backoff_ms();
+        pm_.deadline = now + ack_wait_ms(pm_.dst) + retry_backoff_ms(pm_.tries);
       }
       break;
     case TXK_ANN:

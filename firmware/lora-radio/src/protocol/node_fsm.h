@@ -35,11 +35,12 @@ constexpr uint32_t NACK_MARGIN_MS = 60;         // receiver: wait this past the 
 constexpr uint32_t RETX_WAIT_MS = 700;          // receiver: no fragment after a NACK -> give up
 constexpr uint32_t FIRST_FRAG_SLACK_MS = 500;   // receiver: slack for a late burst start
 constexpr uint32_t VR_CLOSE_FALLBACK_MS = 500;  // receiver: leave voice profile even if the ACK fails
-constexpr uint8_t RETRY_BACKOFF_SLOTS = 4;      // message retry waits 0..3 extra slots of (ToA_SOS + 20 ms), pseudo-random
-                                                // per node: two SOS pressed within one ToA no longer collide on every retry
-constexpr uint32_t RETRY_LISTEN_MS = 2650;      // sender: alarm-profile listening gap before re-announcing.
+constexpr uint8_t RETRY_BACKOFF_SLOTS_EARLY = 4;  // retries 1-2 wait 0..3 extra slots of (ToA_SOS + 20 ms), pseudo-random per node
+constexpr uint8_t RETRY_BACKOFF_SLOTS = 8;        // retries 3+ wait 0..7 slots: two SOS whose timers ended ~20 ms apart kept
+                                                  // colliding with 4 slots (ACK lost in 0.19 % of 2-node cases, re-gate 3)
+constexpr uint32_t RETRY_LISTEN_MS = 3650;      // sender: alarm-profile listening gap before re-announcing.
                                                 // Must be >= max SOS retry period (broadcast: 248 ToA + 1272 ACK wait
-                                                // + 3 x 268 backoff = 2324 ms) + ToA of the SOS (248 ms) = 2572 ms;
+                                                // + 7 x 268 backoff = 3396 ms) + ToA of the SOS (248 ms) = 3644 ms;
                                                 // tests/host checks the inequality
 constexpr uint32_t ACK_SOS_TIMEOUT_MS = 300;    // receiver: ACK_SOS not sent by its slot + this -> leave VOICE, send the SOS anyway
 constexpr uint8_t MAX_NACK_ROUNDS = 2;          // selective retry rounds, then play with a gap
@@ -235,7 +236,7 @@ class NodeFsm {
   const uint8_t id_;
   uint16_t next_id_;
   uint32_t rng_ = 0;  // backoff PRNG state, seeded on first use
-  uint32_t retry_backoff_ms();
+  uint32_t retry_backoff_ms(uint8_t tries);  // tries = attempts already sent
   Role role_ = Role::NONE;
   ProfileId cur_profile_ = PROFILE_ALARM;
   TxKind tx_kind_ = TXK_NONE;
