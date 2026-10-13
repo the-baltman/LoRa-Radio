@@ -79,7 +79,7 @@ aleatorio); `LR_SEEDS=1024 tests/host/out/dualsweep` corre más después de `run
   el clip. Exige que el SOS salga (o termine en FAILED), que el nodo salga de VOICE y que el botón SOS siga vivo.
 * `dualsweep.cpp`, dos SOS pulsados con 0-1500 ms de diferencia (cada 10 ms, 256 semillas, 2 y 3 nodos): falla si
   algún caso no se entrega completo y acusado (límite de tiempo 20000 ms). Hoy 0 sin ACK también con 1024 semillas;
-  alarma oída hasta 17.3 s y ACK hasta 18.3 s (2 nodos), 17.5 s (3 nodos).
+  alarma oída hasta 17.3 s (3 nodos; 15.5 s con 2) y ACK hasta 18.3 s (2 nodos), 17.5 s (3 nodos).
 
 Además: códec de paquetes y rechazos, ToA contra las cifras del scientist, empaquetado de pares, reensamblado,
 contadores con vuelta 65535->0, ciclo SOS+ACK, ACK perdido sin doble alarma, clip sin pérdidas, con 1 fragmento
@@ -143,7 +143,7 @@ Cada uno bloquea su afirmación en el manual hasta medirse:
    primer TX: el SOS de un receptor durante un clip espera su ranura antes de transmitir.
 8. Dirección I2C de la OLED (0x3C supuesto).
 9. Dos SOS pulsados casi a la vez en dos nodos (el simulador no modela efecto captura ni ruido): deben llegar
-   los dos y acusarse; simulador con 1024 semillas: 0 sin ACK, alarma hasta 17.3 s y ACK hasta 18.3 s.
+   los dos y acusarse; simulador con 1024 semillas: 0 sin ACK, alarma hasta 17.3 s (3 nodos; 15.5 s con 2) y ACK hasta 18.3 s (2 nodos).
 
 ## Alcance de v1
 

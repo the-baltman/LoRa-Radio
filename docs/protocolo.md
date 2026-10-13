@@ -90,7 +90,7 @@ Medido en el simulador [DER] (2 nodos, distancia corta, ToA reales): ciclo SOS b
 **784 ms** (1->2) y **516 ms** (2->1); criterio del scientist <= 1.0 s (el backoff solo afecta reintentos).
 Con un ACK perdido: 2 intentos, una sola alarma en el receptor. Dos SOS casi simultáneos (0-1500 ms de
 diferencia): **siempre se entregan los dos y se acusan** (0 casos sin ACK con 1024 semillas, 2 y 3 nodos); la alarma
-se oye en el otro nodo hasta en **17.3 s** y el ACK llega hasta en **18.3 s** (2 nodos; 17.5 s con 3). El test falla
+se oye en el otro nodo hasta en **17.3 s** (3 nodos; 15.5 s con 2) y el ACK llega hasta en **18.3 s** (2 nodos; 17.5 s con 3). El test falla
 con un solo caso sin entrega (límite de tiempo 20000 ms).
 
 **Por qué 8 ranuras desde el 3er reintento (re-gate 3, R3-1).** Con 4 ranuras fijas, 75 de 38656 casos (0.19 %,
@@ -183,7 +183,7 @@ aplicó el arbitraje de c-morty (`QA\02-Arbitrajes\2026-10-02-lora-radio-sos-dur
 | Ídem con 3 nodos | ídem | peor caso **2618 ms** (ídem) |
 | El receptor presiona SOS y el emisor también, antes de la ranura | VABORT del emisor; el receptor arma su SOS al cerrar; llegan los dos | probado (`edge.cpp` E2) |
 | La ranura ACK_SOS no sale (radio rechaza, cola llena) | a los 300 ms el receptor deja VOICE y manda el SOS | probado (`edge.cpp` E1, E1b) |
-| Dos nodos en reposo pulsan SOS con 0-1500 ms de diferencia | backoff aleatorio en los reintentos (sec. 3) | siempre se entregan: alarma hasta **17.3 s**, ACK hasta **18.3 s** (2 nodos; 1024 semillas, 0 sin ACK) |
+| Dos nodos en reposo pulsan SOS con 0-1500 ms de diferencia | backoff aleatorio en los reintentos (sec. 3) | siempre se entregan: alarma hasta **17.3 s** (3 nodos; 15.5 s con 2), ACK hasta **18.3 s** (2 nodos; 1024 semillas, 0 sin ACK) |
 | *(función futura)* Clip unicast y un tercero que no es destinatario manda SOS | los participantes están en SF9 y no lo oyen hasta que terminan; el SOS se reintenta | peor caso **4628 ms** (igual con 256 semillas); no ocurre en v1 (`VOICE_DST` broadcast constante) |
 
 `tests/host/sweep.cpp` repite el barrido (16 semillas) en cada corrida y **falla** si, tras el ANN, algún nodo
@@ -206,7 +206,7 @@ Límites que quedan para el manual (sin LBT; CAD del SX1262 queda como mejora):
   2840 ms) y el tercero la alarma; el emisor del clip no. La mejora sería reintentar hasta que acusen todos los
   pares conocidos. El barrido no lo cuenta como falla porque está antes del fin del ANN; el manual científico
   lo declara.
-* Dos SOS casi simultáneos: se entregan y se acusan siempre; alarma hasta 17.3 s y ACK hasta 18.3 s (simulador,
+* Dos SOS casi simultáneos: se entregan y se acusan siempre; alarma hasta 17.3 s (3 nodos; 15.5 s con 2) y ACK hasta 18.3 s (2 nodos) (simulador,
   1024 semillas). Simulador sin efecto captura ni ruido; la prueba de campo de dos SOS va al manual de armado.
 
 ## 7. Constantes de tiempo
