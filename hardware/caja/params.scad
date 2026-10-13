@@ -114,7 +114,7 @@ sma_x      = 60.0;  // [DEC] posicion en x (rev B: encima de la zona del TP4056,
 
 // ---------- Tornilleria ----------
 insert_hole  = 4.1; // [DEC] M3 x 5.7 de latón: 4.0-4.2 recomendado (CNC Kitchen) [PV con el insert comprado]
-insert_depth = 6.5;
+insert_depth = 6.7; // [DS CNC Kitchen: agujero ciego ~1 mm mas profundo que el inserto de 5.7] rev B.2+
 m3_clear     = 3.5; // [DEC] pasante M3 en FDM
 m3_head_cb   = 6.6; // [DEC] avellanado/cabeza pan M3 (~5.7 x 2.4)
 boss_od      = 8.5;

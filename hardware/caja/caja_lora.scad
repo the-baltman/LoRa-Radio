@@ -1,6 +1,6 @@
 // =====================================================================
-// caja_lora.scad  -  Caja parametrica del radio LoRa-Radio (rev A)
-// Uso:  openscad -o frente.stl -D 'part="front"' caja_lora.scad
+// caja_lora.scad  -  Caja parametrica del radio LoRa-Radio (vigente: rev B.2)
+// Uso:  openscad -o front.stl -D 'part="front"' caja_lora.scad
 // part = front | back | plate_ui | plate_sos | bayplate | pl_ptt | pl_sos |
 //        pl_nav_sq | pl_nav_rd | ring_sos | assembly | exploded | section | check_<x>
 // Todas las medidas salen de params.scad. Coordenadas de modelado: ver params.scad.
