@@ -443,7 +443,7 @@ TEST(sos_by_bystander_during_clip) {
   printf("  bystander SOS at ~1.0 s of a clip: ACKed in %u ms\n", dt);
   CHECK(c.count(EV_MSG_ACKED) == 1);
   CHECK(a.count(EV_MSG_RX) == 1 && b.count(EV_MSG_RX) == 1);
-  CHECK(dt < 3700);  // non-addressed third node, unicast clip (future function, not reachable in v1), see sweep.cpp
+  CHECK(dt < 3700);  // unicast clip + non-addressed third node (future function): one-seed sample; sweep.cpp: <= 4628 ms
   // the clip itself still completes
   net.run_until([&] { return a.count(EV_CLIP_TX_DONE) > 0; }, 10000);
   CHECK(a.count(EV_CLIP_TX_DONE) == 1);

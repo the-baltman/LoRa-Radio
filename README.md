@@ -68,14 +68,19 @@ python -m unittest tools/test_registro_serie.py
 418 comprobaciones (334 de protocolo y simulador de radio con ToA reales, 28 de inyección de fallas, 56 de
 UI/batería/DSP) y dos barridos; cada pieza sale con código 1 si se rompe su límite:
 
-* `sweep.cpp`, SOS durante un clip (pulsación cada 10 ms de 0 a 4 s): falla si el peor caso tras el ANN es
-  >= 3000 ms en broadcast o si un nodo nunca recibe la alarma. Hoy 2561 ms con 2 nodos y 2618 ms con 3.
+Los barridos corren 16 semillas del backoff (en el simulador cada semilla es una muestra del retardo
+aleatorio); `LR_SEEDS=256 tests/host/out/sweep` (o `dualsweep`) corre más después de `run.sh`.
+
+* `sweep.cpp`, SOS durante un clip (pulsación cada 10 ms de 0 a 4 s): falla si tras el ANN un nodo nunca recibe
+  la alarma o el peor caso llega a 3000 ms (receptor) o 3200 ms (emisor). Hoy receptor 2561 ms (2 nodos) y
+  2618 ms (3), emisor 3139 ms; unicast con tercero (función futura, sin puerta) 4628 ms.
 * `edge.cpp`, inyección de fallas sobre el SOS del receptor durante un clip: radio que rechaza la ranura
   ACK_SOS, radio muerto, VABORT del emisor antes de la ranura, enlace perdido, SOS mientras el receptor cierra
   el clip. Exige que el SOS salga (o termine en FAILED), que el nodo salga de VOICE y que el botón SOS siga vivo.
-* `dualsweep.cpp`, dos SOS pulsados con 0-1500 ms de diferencia (cada 10 ms, 3 semillas, 2 y 3 nodos, 453
-  casos cada uno): falla si algún caso no se entrega completo o si el peor llega a 8000 ms. Hoy 0/453 sin
-  entrega, máximo 7194 ms (2 nodos) y 7220 ms (3 nodos).
+* `dualsweep.cpp`, dos SOS pulsados con 0-1500 ms de diferencia (cada 10 ms, 16 semillas, 2 y 3 nodos, 2416
+  casos cada uno): falla si algún caso no se entrega completo o si el peor llega a 13000 ms. Hoy 0/2416 sin
+  entrega, máximo 12.1 s (2 nodos) y 8.5 s (3 nodos). **Con 256 semillas falla**: 0.19 % de los casos con 2
+  nodos sin entrega y máximo 18.7 s (límite abierto en arbitraje, `docs/protocolo.md` sec. 3).
 
 Además: códec de paquetes y rechazos, ToA contra las cifras del scientist, empaquetado de pares, reensamblado,
 contadores con vuelta 65535->0, ciclo SOS+ACK, ACK perdido sin doble alarma, clip sin pérdidas, con 1 fragmento
@@ -133,16 +138,18 @@ Cada uno bloquea su afirmación en el manual hasta medirse:
    (`gpio_hold`, la OLED dice "APAGAR SW1 Y CARGAR").
 6. Calibración del ADC de batería y de los umbrales de corte.
 7. Latencia fin-de-PTT a audio (esperado ~2.2 s; cada ronda de NACK suma ~0.61 s en broadcast) y ciclo SOS+ACK
-   (esperado 0.5-0.8 s; durante un clip, peor caso del simulador 2.62 s, criterio < 3.0 s) contra los del
+   (esperado 0.5-0.8 s; durante un clip, peor caso del simulador 2.62 s, criterio < 3.0 s; si pulsa el emisor
+   en los ~30 ms que siguen al fin de su ráfaga, hasta 3.14 s, aceptado por c-morty) contra los del
    simulador. El log `ACK` trae los ms **desde la pulsación** (cuando el firmware aceptó el mensaje), no desde el
    primer TX: el SOS de un receptor durante un clip espera su ranura antes de transmitir.
 8. Dirección I2C de la OLED (0x3C supuesto).
 9. Dos SOS pulsados casi a la vez en dos nodos (el simulador no modela efecto captura ni ruido): deben llegar
-   los dos y acusarse; simulador 0/453 sin entrega, peor caso 7.2 s.
+   los dos y acusarse; simulador con 16 semillas 0/2416 sin entrega y peor caso 12.1 s, pero con 256 semillas
+   0.19 % sin entrega con 2 nodos (límite abierto, en arbitraje).
 
 ## Alcance de v1
 
 * `VOICE_DST = NODE_BROADCAST` es **constante** (`app.cpp`): clips y mensajes van siempre a todos y no hay UI
   para elegir destino. El formato admite unicast, pero el clip unicast es **función futura**: con él, el SOS de
-  un tercero no destinatario tarda hasta 2572 ms en el simulador (`sweep.cpp` lo mide con límite 3700 ms).
+  un tercero no destinatario tarda hasta 4628 ms en el simulador (`sweep.cpp` lo imprime sin puerta).
 * Límites del SOS que quedan declarados: `docs/protocolo.md` sección 6.
